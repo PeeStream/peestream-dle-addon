@@ -210,8 +210,31 @@ global $db;
 if( isset( $db ) ) {
 	$queue_t = PREFIX . "_peestream_queue";
 	$audit_t = PREFIX . "_peestream_webhooks";
+	$archive_t = PREFIX . "_peestream_queue_archive";
 
-	// 1. Column migrations for peestream_queue
+	// 1. Ensure Archive Table Exists for Safely Preserving Historical Duplicates
+	$db->query( "CREATE TABLE IF NOT EXISTS {$archive_t} (
+		id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+		original_queue_id INT UNSIGNED NOT NULL DEFAULT 0,
+		post_id INT UNSIGNED NOT NULL,
+		original_url VARCHAR(500) NOT NULL,
+		url_hash VARCHAR(64) NOT NULL DEFAULT '',
+		filecode VARCHAR(64) NOT NULL DEFAULT '',
+		state VARCHAR(32) NOT NULL DEFAULT 'pending',
+		original_xfields MEDIUMTEXT,
+		original_short MEDIUMTEXT,
+		original_full MEDIUMTEXT,
+		status VARCHAR(32) NOT NULL DEFAULT 'pending',
+		owner_token VARCHAR(64) NOT NULL DEFAULT '',
+		retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		archived_at DATETIME NOT NULL,
+		error_msg VARCHAR(255) NOT NULL DEFAULT '',
+		INDEX idx_post_id (post_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", false );
+
+	// 2. Column migrations for peestream_queue
 	$cols = array();
 	$q_cols = $db->query( "SHOW COLUMNS FROM {$queue_t}", false );
 	if( $q_cols ) {
@@ -225,11 +248,14 @@ if( isset( $db ) ) {
 				$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `original_url` VARCHAR(500) NOT NULL AFTER `post_id`", false );
 			}
 		}
+		if( !in_array( 'url_hash', $cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `url_hash` VARCHAR(64) NOT NULL DEFAULT '' AFTER `original_url`", false );
+		}
 		if( !in_array( 'filecode', $cols, true ) ) {
 			if( in_array( 'file_code', $cols, true ) ) {
 				$db->query( "ALTER TABLE {$queue_t} CHANGE COLUMN `file_code` `filecode` VARCHAR(64) NOT NULL DEFAULT ''", false );
 			} else {
-				$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `filecode` VARCHAR(64) NOT NULL DEFAULT '' AFTER `original_url`", false );
+				$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `filecode` VARCHAR(64) NOT NULL DEFAULT '' AFTER `url_hash`", false );
 			}
 		}
 		if( !in_array( 'state', $cols, true ) ) {
@@ -244,12 +270,66 @@ if( isset( $db ) ) {
 		if( !in_array( 'original_full', $cols, true ) ) {
 			$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `original_full` MEDIUMTEXT AFTER `original_short`", false );
 		}
+		if( !in_array( 'owner_token', $cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `owner_token` VARCHAR(64) NOT NULL DEFAULT '' AFTER `status`", false );
+		}
+		if( !in_array( 'retry_count', $cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `retry_count` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `owner_token`", false );
+		}
 		if( !in_array( 'error_msg', $cols, true ) ) {
 			$db->query( "ALTER TABLE {$queue_t} ADD COLUMN `error_msg` VARCHAR(255) NOT NULL DEFAULT '' AFTER `updated_at`", false );
 		}
 	}
 
-	// 2. Index migration for peestream_webhooks (ensure UNIQUE KEY uq_fc_event)
+	// 3. Ensure all existing rows have valid 64-char SHA-256 url_hash
+	$db->query( "UPDATE {$queue_t} SET url_hash = SHA2(original_url, 256) WHERE url_hash = '' OR url_hash IS NULL", false );
+
+	// 4. Ensure Collision-Free, Full-Length UNIQUE KEY on (post_id, url_hash)
+	$idx_hash_q = $db->query( "SHOW INDEX FROM {$queue_t} WHERE Key_name = 'uq_post_urlhash'", false );
+	$has_uq_hash = ( $idx_hash_q && ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $idx_hash_q ) > 0 : true ) );
+	if( ! $has_uq_hash ) {
+		$dup_check = $db->super_query( "SELECT COUNT(DISTINCT q1.id) AS cnt 
+		                                 FROM {$queue_t} q1 
+		                                 INNER JOIN {$queue_t} q2 
+		                                 WHERE q1.id < q2.id AND q1.post_id = q2.post_id 
+		                                   AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )" );
+		$expected_dups = ( !empty( $dup_check['cnt'] ) ) ? intval( $dup_check['cnt'] ) : 0;
+
+		$archive_ok = true;
+		if( $expected_dups > 0 ) {
+			$now_date = date( 'Y-m-d H:i:s' );
+			$ins_res = $db->query( "INSERT IGNORE INTO {$archive_t} (original_queue_id, post_id, original_url, url_hash, filecode, state, original_xfields, original_short, original_full, status, owner_token, retry_count, created_at, updated_at, archived_at, error_msg)
+			                        SELECT q1.id, q1.post_id, q1.original_url, q1.url_hash, q1.filecode, q1.state, q1.original_xfields, q1.original_short, q1.original_full, q1.status, q1.owner_token, q1.retry_count, q1.created_at, q1.updated_at, '{$now_date}', q1.error_msg
+			                        FROM {$queue_t} q1
+			                        INNER JOIN {$queue_t} q2
+			                        WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+
+			$arch_verify = $db->super_query( "SELECT COUNT(DISTINCT original_queue_id) AS cnt 
+			                                   FROM {$archive_t} 
+			                                   WHERE original_queue_id IN (
+			                                       SELECT q1.id FROM {$queue_t} q1 
+			                                       INNER JOIN {$queue_t} q2 
+			                                       WHERE q1.id < q2.id AND q1.post_id = q2.post_id 
+			                                         AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )
+			                                   )" );
+			$archived_cnt = ( !empty( $arch_verify['cnt'] ) ) ? intval( $arch_verify['cnt'] ) : 0;
+			if( ! $ins_res || $archived_cnt < $expected_dups ) {
+				$archive_ok = false;
+			}
+		}
+
+		if( $archive_ok ) {
+			if( $expected_dups > 0 ) {
+				$db->query( "DELETE q1 FROM {$queue_t} q1
+				             INNER JOIN {$queue_t} q2
+				             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+			}
+			$db->query( "ALTER TABLE {$queue_t} DROP INDEX uq_post_orig", false );
+			$db->query( "ALTER TABLE {$queue_t} ADD UNIQUE KEY uq_post_urlhash (post_id, url_hash)", false );
+		}
+	}
+
+	// 5. Index migration for peestream_webhooks (ensure UNIQUE KEY uq_fc_event)
 	$idx = $db->query( "SHOW INDEX FROM {$audit_t} WHERE Key_name = 'uq_fc_event'", false );
 	if( !$idx || ( method_exists( $db, 'num_rows' ) ? !$db->num_rows( $idx ) : false ) ) {
 		$db->query( "DELETE w1 FROM {$audit_t} w1 INNER JOIN {$audit_t} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event", false );
