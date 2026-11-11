@@ -99,6 +99,7 @@ if( file_exists( $c_file ) ) {
 	include( $c_file );
 }
 $init_secret = bin2hex( random_bytes( 24 ) );
+$init_cron_secret = bin2hex( random_bytes( 24 ) );
 $defaults = array (
 	'api_key' => '',
 	'player_domain' => 'https://peeplayer.com',
@@ -112,6 +113,7 @@ $defaults = array (
 	'allow_fullscreen' => '1',
 	'xfield_name' => 'peestream',
 	'webhook_secret' => $init_secret,
+	'cron_secret' => $init_cron_secret,
 	'auto_create_news' => '0',
 	'default_category' => '1',
 	'moderate_new_posts' => '1',
@@ -123,6 +125,9 @@ $merged = array_merge( $defaults, $peestream_config );
 if( empty( $merged['webhook_secret'] ) || strlen( $merged['webhook_secret'] ) < 16 || $merged['webhook_secret'] === '529c675e950e1f3b3e3d27415b8437d54923b5c21f331241' ) {
 	$merged['webhook_secret'] = $init_secret;
 }
+if( empty( $merged['cron_secret'] ) || strlen( $merged['cron_secret'] ) < 16 || $merged['cron_secret'] === $merged['webhook_secret'] ) {
+	$merged['cron_secret'] = $init_cron_secret;
+}
 $content = "<?PHP\n\n\$peestream_config = " . var_export( $merged, true ) . ";\n\n?>";
 @file_put_contents( $c_file, $content );
 @chmod( $c_file, 0644 );]]></phpinstall>
@@ -132,8 +137,16 @@ if( file_exists( $c_file ) ) {
 	include( $c_file );
 }
 if( is_array( $peestream_config ) ) {
+	$need_save = false;
 	if( empty( $peestream_config['webhook_secret'] ) || strlen( $peestream_config['webhook_secret'] ) < 16 || $peestream_config['webhook_secret'] === '529c675e950e1f3b3e3d27415b8437d54923b5c21f331241' ) {
 		$peestream_config['webhook_secret'] = bin2hex( random_bytes( 24 ) );
+		$need_save = true;
+	}
+	if( empty( $peestream_config['cron_secret'] ) || strlen( $peestream_config['cron_secret'] ) < 16 || $peestream_config['cron_secret'] === $peestream_config['webhook_secret'] ) {
+		$peestream_config['cron_secret'] = bin2hex( random_bytes( 24 ) );
+		$need_save = true;
+	}
+	if( $need_save ) {
 		$content = "<?PHP\n\n\$peestream_config = " . var_export( $peestream_config, true ) . ";\n\n?>";
 		@file_put_contents( $c_file, $content );
 	}

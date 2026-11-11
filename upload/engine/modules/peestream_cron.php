@@ -7,10 +7,10 @@ Version: 1.0.1
 Author: PeeStream Team
 Official Website: https://peestream.com | Player: https://peeplayer.com
 =============================================================================
-Can be executed via CLI:
+Can be executed via CLI (Recommended):
   php -f /path/to/engine/modules/peestream_cron.php
-Or via HTTP / crontab curl:
-  curl -s "https://example.com/engine/modules/peestream_cron.php?secret=YOUR_WEBHOOK_SECRET"
+Or via HTTP POST (requires isolated cron_secret):
+  curl -s -X POST -d "secret=YOUR_CRON_SECRET" "https://example.com/engine/modules/peestream_cron.php"
 =============================================================================
 */
 
@@ -53,6 +53,49 @@ if( !isset( $config ) && file_exists( ENGINE_DIR . '/data/config.php' ) ) {
 	require_once( ENGINE_DIR . '/data/config.php' );
 }
 
+// Load DLE helper functions (admin and frontend)
+if( file_exists( ENGINE_DIR . '/inc/include/functions.inc.php' ) ) {
+	require_once( ENGINE_DIR . '/inc/include/functions.inc.php' );
+}
+if( file_exists( ENGINE_DIR . '/modules/functions.php' ) ) {
+	require_once( ENGINE_DIR . '/modules/functions.php' );
+}
+
+// Compliant fallbacks for xfields functions if not defined
+if( !function_exists( 'xfieldsdataload' ) ) {
+	function xfieldsdataload( $str ) {
+		if( empty( $str ) ) return array();
+		$res = array();
+		$fields = explode( "||", (string)$str );
+		foreach( $fields as $f ) {
+			if( empty( $f ) ) continue;
+			$pair = explode( "|", $f );
+			if( isset( $pair[0] ) && $pair[0] !== '' ) {
+				$res[ $pair[0] ] = isset( $pair[1] ) ? $pair[1] : '';
+			}
+		}
+		return $res;
+	}
+}
+
+if( !function_exists( 'xfieldsdatasave' ) ) {
+	function xfieldsdatasave( $data ) {
+		if( !is_array( $data ) || empty( $data ) ) return '';
+		$out = array();
+		foreach( $data as $k => $v ) {
+			$out[] = $k . '|' . $v;
+		}
+		return implode( '||', $out );
+	}
+}
+
+if( !function_exists( 'clear_cache' ) ) {
+	function clear_cache( $cache_areas = array() ) {
+		// No-op if cache engine not initialized
+		return true;
+	}
+}
+
 // Load PeeStream configuration
 $c_file = ENGINE_DIR . '/data/peestream.conf.php';
 $peestream_config = array();
@@ -61,25 +104,47 @@ if( file_exists( $c_file ) ) {
 }
 
 $cfg = array_merge( array(
-	'api_key' => '',
-	'player_domain' => 'https://peeplayer.com',
-	'api_domain' => 'https://peestream.com',
-	'xfield_name' => 'peestream',
+	'api_key'        => '',
+	'player_domain'  => 'https://peeplayer.com',
+	'api_domain'     => 'https://peestream.com',
+	'xfield_name'    => 'peestream',
 	'webhook_secret' => '',
+	'cron_secret'    => '',
 ), is_array( $peestream_config ) ? $peestream_config : array() );
 
-// Security Check for HTTP calls
+// Strict Security Check for HTTP execution
 if( !$is_cli ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
-	$incoming_secret = isset( $_GET['secret'] ) ? trim( (string)$_GET['secret'] ) : ( isset( $_POST['secret'] ) ? trim( (string)$_POST['secret'] ) : '' );
-	if( empty( $cfg['webhook_secret'] ) || empty( $incoming_secret ) || !hash_equals( (string)$cfg['webhook_secret'], (string)$incoming_secret ) ) {
+
+	if( isset( $_SERVER['REQUEST_METHOD'] ) && strtoupper( $_SERVER['REQUEST_METHOD'] ) !== 'POST' ) {
+		http_response_code( 405 );
+		echo json_encode( array( 'success' => false, 'error' => 'Method Not Allowed. HTTP cron execution strictly requires POST.' ) );
+		exit;
+	}
+
+	$cron_secret = !empty( $cfg['cron_secret'] ) ? trim( (string)$cfg['cron_secret'] ) : '';
+	if( empty( $cron_secret ) || strlen( $cron_secret ) < 16 ) {
 		http_response_code( 403 );
-		echo json_encode( array( 'success' => false, 'error' => 'Forbidden: Invalid or missing secret token.' ) );
+		echo json_encode( array( 'success' => false, 'error' => 'HTTP cron is disabled or cron_secret is not configured (minimum 16 characters). Use CLI: php -f engine/modules/peestream_cron.php' ) );
+		exit;
+	}
+
+	// Webhook secret cannot be reused as cron secret for security isolation
+	if( !empty( $cfg['webhook_secret'] ) && hash_equals( (string)$cfg['webhook_secret'], $cron_secret ) ) {
+		http_response_code( 403 );
+		echo json_encode( array( 'success' => false, 'error' => 'Security error: cron_secret must not be identical to webhook_secret.' ) );
+		exit;
+	}
+
+	$incoming_secret = isset( $_POST['secret'] ) ? trim( (string)$_POST['secret'] ) : ( isset( $_SERVER['HTTP_X_CRON_SECRET'] ) ? trim( (string)$_SERVER['HTTP_X_CRON_SECRET'] ) : '' );
+	if( empty( $incoming_secret ) || !hash_equals( $cron_secret, $incoming_secret ) ) {
+		http_response_code( 403 );
+		echo json_encode( array( 'success' => false, 'error' => 'Forbidden: Invalid or missing cron secret token.' ) );
 		exit;
 	}
 }
 
-// Concurrency locking (non-blocking)
+// Process-level Concurrency locking (non-blocking)
 $lock_file = ENGINE_DIR . '/cache/peestream_cron.lock';
 $fp_lock = @fopen( $lock_file, 'c+' );
 if( !$fp_lock || !@flock( $fp_lock, LOCK_EX | LOCK_NB ) ) {
@@ -92,7 +157,56 @@ if( !$fp_lock || !@flock( $fp_lock, LOCK_EX | LOCK_NB ) ) {
 	exit( 0 );
 }
 
-// Load API call & helper functions from peestream.php if not available
+// Reliable affected rows reader across MySQL drivers (fail-closed if unknown)
+if( !function_exists( 'peestream_get_affected_rows' ) ) {
+	function peestream_get_affected_rows( $db ) {
+		if( method_exists( $db, 'get_affected_rows' ) ) {
+			return (int) $db->get_affected_rows();
+		}
+		if( isset( $db->db_id ) ) {
+			if( is_object( $db->db_id ) && isset( $db->db_id->affected_rows ) ) {
+				return (int) $db->db_id->affected_rows;
+			}
+			if( is_resource( $db->db_id ) || is_object( $db->db_id ) ) {
+				return (int) @mysqli_affected_rows( $db->db_id );
+			}
+		}
+		return 0; // Fail closed if affected rows cannot be verified
+	}
+}
+
+// Unified atomic queue item claim by ID (with stale lock recovery)
+if( !function_exists( 'peestream_claim_queue_item' ) ) {
+	function peestream_claim_queue_item( $db, $queue_id, $timeout_seconds = 300 ) {
+		$qid = intval( $queue_id );
+		if( $qid <= 0 ) return false;
+		$now_date = date( 'Y-m-d H:i:s' );
+		$stale_time = date( 'Y-m-d H:i:s', time() - $timeout_seconds );
+		$queue_table = PREFIX . "_peestream_queue";
+		$sql = "UPDATE {$queue_table} 
+		        SET status='checking', updated_at='{$now_date}' 
+		        WHERE id='{$qid}' 
+		          AND (status IN ('pending', 'queued') OR (status='checking' AND updated_at < '{$stale_time}'))";
+		$res = $db->query( $sql, false );
+		if( !$res ) return false;
+		return ( peestream_get_affected_rows( $db ) > 0 );
+	}
+}
+
+// Release claimed task with specific status and optional error message
+if( !function_exists( 'peestream_release_task' ) ) {
+	function peestream_release_task( $db, $queue_id, $new_status = 'pending', $error_msg = '' ) {
+		$qid = intval( $queue_id );
+		if( $qid <= 0 ) return;
+		$now_date = date( 'Y-m-d H:i:s' );
+		$safe_status = $db->safesql( $new_status );
+		$safe_err = $db->safesql( $error_msg );
+		$queue_table = PREFIX . "_peestream_queue";
+		$db->query( "UPDATE {$queue_table} SET status='{$safe_status}', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$qid}'", false );
+	}
+}
+
+// Load API call & helper functions if not available
 if( !function_exists( 'peestream_extract_file_info' ) ) {
 	function peestream_extract_file_info( $info_res, $target_filecode = '' ) {
 		if( !is_array( $info_res ) || empty( $info_res['success'] ) || empty( $info_res['data'] ) ) {
@@ -162,7 +276,8 @@ $queue_table = PREFIX . "_peestream_queue";
 $backup_table = PREFIX . "_peestream_backups";
 $table = PREFIX . "_post";
 
-$q_res = $db->query( "SELECT * FROM {$queue_table} WHERE status IN ('pending', 'queued') ORDER BY id ASC LIMIT 25" );
+$stale_time = date( 'Y-m-d H:i:s', time() - 300 );
+$q_res = $db->query( "SELECT * FROM {$queue_table} WHERE status IN ('pending', 'queued') OR (status='checking' AND updated_at < '{$stale_time}') ORDER BY id ASC LIMIT 25" );
 $now_date = date( 'Y-m-d H:i:s' );
 $ready_count = 0;
 $checked_count = 0;
@@ -171,6 +286,11 @@ $failed_count = 0;
 $logs = array();
 
 while( $item = $db->get_row( $q_res ) ) {
+	// Atomic claim check: ensure no concurrent worker (cron or manual AJAX) processes this item
+	if( ! peestream_claim_queue_item( $db, $item['id'] ) ) {
+		continue;
+	}
+
 	$checked_count++;
 	$pid = intval( $item['post_id'] );
 	$fc = $item['filecode'];
@@ -202,9 +322,15 @@ while( $item = $db->get_row( $q_res ) ) {
 			$safe_old_url = $db->safesql( $old_url );
 			$safe_fc = $db->safesql( $fc );
 
-			// Backup
-			$db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
-						 VALUES ('{$pid}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_fc}', '{$now_date}', 'completed')" );
+			// Pre-migration backup (VERIFIED BEFORE MODIFYING POST)
+			$ins_b = $db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
+						 VALUES ('{$pid}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_fc}', '{$now_date}', 'completed')", false );
+			$backup_id = intval( $db->insert_id() );
+			if( !$ins_b || $backup_id <= 0 ) {
+				peestream_release_task( $db, $item['id'], 'pending', 'Backup insertion failed' );
+				$logs[] = "[ERROR] Post #" . $pid . ": Pre-migration backup failed to save. Article modification aborted for safety.";
+				continue;
+			}
 
 			// Replace
 			$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
@@ -225,7 +351,14 @@ while( $item = $db->get_row( $q_res ) ) {
 			$safe_short = $db->safesql( $upd_short );
 			$safe_full = $db->safesql( $upd_full );
 
-			$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'" );
+			$upd_post = $db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'", false );
+			if( !$upd_post ) {
+				$db->query( "UPDATE {$backup_table} SET status='failed' WHERE id='{$backup_id}'", false );
+				peestream_release_task( $db, $item['id'], 'failed', 'Post update query failed' );
+				$logs[] = "[ERROR] Post #" . $pid . ": Database error updating post. Replacement aborted.";
+				continue;
+			}
+
 			$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
 			$ready_count++;
 			$logs[] = "[READY] Post #" . $pid . ": Transcoding complete (canplay=1)! PeeStream player attached.";
@@ -238,6 +371,7 @@ while( $item = $db->get_row( $q_res ) ) {
 		$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
 		$safe_state = $db->safesql( $cur_state );
 		$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+		peestream_release_task( $db, $item['id'], 'pending' );
 	}
 }
 
@@ -245,7 +379,7 @@ if( $ready_count > 0 && function_exists( 'clear_cache' ) ) {
 	clear_cache( array( 'news_' ) );
 }
 
-// Release lock
+// Release process lock
 @flock( $fp_lock, LOCK_UN );
 @fclose( $fp_lock );
 

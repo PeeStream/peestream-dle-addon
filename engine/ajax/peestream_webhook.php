@@ -93,8 +93,25 @@ if ( ! empty( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ) {
 }
 $client_ip = substr( preg_replace( '/[^0-9a-fA-F:.]/', '', $client_ip ), 0, 45 );
 
-// 6. Rate Limiting & Replay Protection Table
+// Reliable affected rows reader across MySQL drivers (fail-closed if unknown)
+if ( ! function_exists( 'peestream_get_affected_rows' ) ) {
+	function peestream_get_affected_rows( $db ) {
+		if ( method_exists( $db, 'get_affected_rows' ) ) {
+			return (int) $db->get_affected_rows();
+		}
+		if ( isset( $db->db_id ) ) {
+			if ( is_object( $db->db_id ) && isset( $db->db_id->affected_rows ) ) {
+				return (int) $db->db_id->affected_rows;
+			}
+			if ( is_resource( $db->db_id ) || is_object( $db->db_id ) ) {
+				return (int) @mysqli_affected_rows( $db->db_id );
+			}
+		}
+		return 0; // Fail closed if affected rows cannot be verified
+	}
+}
 
+// 6. Rate Limiting & Replay Protection Table
 $audit_table = PREFIX . "_peestream_webhooks";
 $db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
 	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -106,15 +123,7 @@ $db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
 	status VARCHAR(32) NOT NULL DEFAULT 'processed',
 	UNIQUE KEY uq_fc_event (file_code, event),
 	INDEX idx_ip_time (ip, received_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
-
-// Runtime ALTER TABLE migration: ensure UNIQUE index exists on older tables
-// First clean up any historical duplicate rows to avoid MySQL error 1062
-$db->query( "DELETE w1 FROM {$audit_table} w1 INNER JOIN {$audit_table} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event", false );
-$idx_check = $db->query( "SHOW INDEX FROM {$audit_table} WHERE Key_name = 'uq_fc_event'", false );
-if ( ! $idx_check || ( method_exists( $db, 'num_rows' ) ? ! $db->num_rows( $idx_check ) : false ) ) {
-	$db->query( "ALTER TABLE {$audit_table} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
-}
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", false );
 
 // Rate Limiting: Max 60 requests per minute per IP
 $safe_ip = $db->safesql( $client_ip );
@@ -218,7 +227,7 @@ if ( $reserved ) {
 			$safe_id = intval( $existing['id'] );
 			$safe_prev_time = $db->safesql( $existing['received_at'] );
 			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$safe_id}' AND status = 'processing' AND received_at = '{$safe_prev_time}'", false );
-			$aff = method_exists( $db, 'get_affected_rows' ) ? $db->get_affected_rows() : ( isset( $db->db_id ) && is_object( $db->db_id ) && isset( $db->db_id->affected_rows ) ? $db->db_id->affected_rows : 1 );
+			$aff = peestream_get_affected_rows( $db );
 			if ( $aff > 0 ) {
 				$has_lock = true;
 			} else {
@@ -235,7 +244,7 @@ if ( $reserved ) {
 			$safe_id = intval( $existing['id'] );
 			$safe_prev_time = $db->safesql( $existing['received_at'] );
 			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$safe_id}' AND status = 'failed' AND received_at = '{$safe_prev_time}'", false );
-			$aff = method_exists( $db, 'get_affected_rows' ) ? $db->get_affected_rows() : ( isset( $db->db_id ) && is_object( $db->db_id ) && isset( $db->db_id->affected_rows ) ? $db->db_id->affected_rows : 1 );
+			$aff = peestream_get_affected_rows( $db );
 			if ( $aff > 0 ) {
 				$has_lock = true;
 			} else {

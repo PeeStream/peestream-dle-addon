@@ -15,6 +15,7 @@ $peestream_config = array (
   'allow_fullscreen' => '1',
   'xfield_name' => 'peestream',
   'webhook_secret' => '',
+  'cron_secret' => '',
   'auto_create_news' => '0',
   'default_category' => '1',
   'moderate_new_posts' => '1',

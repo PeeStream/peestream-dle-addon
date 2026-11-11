@@ -42,6 +42,7 @@ $cfg = array_merge( array(
 	'allow_fullscreen' => '1',
 	'xfield_name' => 'peestream',
 	'webhook_secret' => '',
+	'cron_secret' => '',
 	'auto_create_news' => '0',
 	'default_category' => '1',
 	'moderate_new_posts' => '1',
@@ -50,6 +51,77 @@ $cfg = array_merge( array(
 // In-memory initialization if missing, too short, or matching compromised placeholder
 if( empty( $cfg['webhook_secret'] ) || strlen( $cfg['webhook_secret'] ) < 16 || $cfg['webhook_secret'] === '529c675e950e1f3b3e3d27415b8437d54923b5c21f331241' ) {
 	$cfg['webhook_secret'] = bin2hex( random_bytes( 24 ) );
+}
+if( empty( $cfg['cron_secret'] ) || strlen( $cfg['cron_secret'] ) < 16 || $cfg['cron_secret'] === $cfg['webhook_secret'] ) {
+	$cfg['cron_secret'] = bin2hex( random_bytes( 24 ) );
+}
+
+// Reliable affected rows reader across MySQL drivers (fail-closed if unknown)
+if ( ! function_exists( 'peestream_get_affected_rows' ) ) {
+	function peestream_get_affected_rows( $db ) {
+		if ( method_exists( $db, 'get_affected_rows' ) ) {
+			return (int) $db->get_affected_rows();
+		}
+		if ( isset( $db->db_id ) ) {
+			if ( is_object( $db->db_id ) && isset( $db->db_id->affected_rows ) ) {
+				return (int) $db->db_id->affected_rows;
+			}
+			if ( is_resource( $db->db_id ) || is_object( $db->db_id ) ) {
+				return (int) @mysqli_affected_rows( $db->db_id );
+			}
+		}
+		return 0; // Fail closed if affected rows cannot be verified
+	}
+}
+
+// Unified atomic queue item claim by ID (with stale lock recovery)
+if ( ! function_exists( 'peestream_claim_queue_item' ) ) {
+	function peestream_claim_queue_item( $db, $queue_id, $timeout_seconds = 300 ) {
+		$qid = intval( $queue_id );
+		if ( $qid <= 0 ) return false;
+		$now_date = date( 'Y-m-d H:i:s' );
+		$stale_time = date( 'Y-m-d H:i:s', time() - $timeout_seconds );
+		$queue_table = PREFIX . "_peestream_queue";
+		$sql = "UPDATE {$queue_table} 
+		        SET status='checking', updated_at='{$now_date}' 
+		        WHERE id='{$qid}' 
+		          AND (status IN ('pending', 'queued') OR (status='checking' AND updated_at < '{$stale_time}'))";
+		$res = $db->query( $sql, false );
+		if ( ! $res ) return false;
+		return ( peestream_get_affected_rows( $db ) > 0 );
+	}
+}
+
+// Unified atomic task claim by (post_id, original_url)
+if ( ! function_exists( 'peestream_claim_task' ) ) {
+	function peestream_claim_task( $db, $post_id, $original_url, $timeout_seconds = 300 ) {
+		$pid = intval( $post_id );
+		if ( $pid <= 0 || empty( $original_url ) ) return false;
+		$safe_url = $db->safesql( $original_url );
+		$now_date = date( 'Y-m-d H:i:s' );
+		$stale_time = date( 'Y-m-d H:i:s', time() - $timeout_seconds );
+		$queue_table = PREFIX . "_peestream_queue";
+		$sql = "UPDATE {$queue_table} 
+		        SET status='checking', updated_at='{$now_date}' 
+		        WHERE post_id='{$pid}' AND original_url='{$safe_url}' 
+		          AND (status IN ('pending', 'queued') OR (status='checking' AND updated_at < '{$stale_time}'))";
+		$res = $db->query( $sql, false );
+		if ( ! $res ) return false;
+		return ( peestream_get_affected_rows( $db ) > 0 );
+	}
+}
+
+// Release claimed task with specific status and optional error message
+if ( ! function_exists( 'peestream_release_task' ) ) {
+	function peestream_release_task( $db, $queue_id, $new_status = 'pending', $error_msg = '' ) {
+		$qid = intval( $queue_id );
+		if ( $qid <= 0 ) return;
+		$now_date = date( 'Y-m-d H:i:s' );
+		$safe_status = $db->safesql( $new_status );
+		$safe_err = $db->safesql( $error_msg );
+		$queue_table = PREFIX . "_peestream_queue";
+		$db->query( "UPDATE {$queue_table} SET status='{$safe_status}', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$qid}'", false );
+	}
 }
 
 // Helper function for secure outbound cURL requests to PeeStream Cloud API
@@ -249,17 +321,23 @@ if( $action === 'migrator_scan' ) {
 		exit;
 	}
 	
+	$page = isset( $_REQUEST['page'] ) ? max( 1, intval( $_REQUEST['page'] ) ) : 1;
+	$limit = isset( $_REQUEST['limit'] ) ? min( 2000, max( 10, intval( $_REQUEST['limit'] ) ) ) : 500;
+	$offset = ( $page - 1 ) * $limit;
+
 	$table = PREFIX . "_post";
 	$sql = "SELECT id, title, xfields, short_story, full_story FROM {$table} 
 			WHERE xfields LIKE '%streamtape%' OR xfields LIKE '%mixdrop%' OR xfields LIKE '%voe.%' OR xfields LIKE '%streamwish%' OR xfields LIKE '%earnvids%' OR xfields LIKE '%vidhide%' OR xfields LIKE '%pixeldrain%'
 			   OR short_story LIKE '%streamtape%' OR short_story LIKE '%mixdrop%' OR short_story LIKE '%voe.%' OR short_story LIKE '%streamwish%' OR short_story LIKE '%earnvids%' OR short_story LIKE '%vidhide%' OR short_story LIKE '%pixeldrain%'
 			   OR full_story LIKE '%streamtape%' OR full_story LIKE '%mixdrop%' OR full_story LIKE '%voe.%' OR full_story LIKE '%streamwish%' OR full_story LIKE '%earnvids%' OR full_story LIKE '%vidhide%' OR full_story LIKE '%pixeldrain%'
-			ORDER BY id DESC LIMIT 2000";
+			ORDER BY id DESC LIMIT {$offset}, {$limit}";
 	
 	$query = $db->query( $sql );
 	$items = array();
+	$raw_count = 0;
 	
 	while( $row = $db->get_row( $query ) ) {
+		$raw_count++;
 		$combined = $row['xfields'] . ' ' . $row['short_story'] . ' ' . $row['full_story'];
 		$urls = peestream_find_competitors( $combined );
 		
@@ -291,6 +369,10 @@ if( $action === 'migrator_scan' ) {
 	
 	echo json_encode( array(
 		'success' => true,
+		'page' => $page,
+		'limit' => $limit,
+		'total_page_items' => count( $items ),
+		'has_more' => ( $raw_count >= $limit ),
 		'total' => count( $items ),
 		'items' => $items
 	) );
@@ -356,6 +438,19 @@ if( $action === 'migrator_process_one' ) {
 			) );
 			exit;
 		}
+
+		// Atomic task claim so no concurrent worker (cron or manual) processes at the same time
+		$claimed = peestream_claim_task( $db, $post_id, $old_url );
+		if( !$claimed ) {
+			echo json_encode( array(
+				'success' => true,
+				'pending' => true,
+				'post_id' => $post_id,
+				'filecode' => $new_code,
+				'msg' => '[BUSY] Post #' . $post_id . ': Task currently being processed by another worker. Skipped.'
+			) );
+			exit;
+		}
 		
 		// Poll status from PeeStream API
 		$info_res = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $new_code ) );
@@ -374,6 +469,7 @@ if( $action === 'migrator_process_one' ) {
 			$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
 			$safe_state = $db->safesql( $cur_state );
 			$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$q_item['id']}'" );
+			peestream_release_task( $db, $q_item['id'], 'pending' );
 			// SAFEGUARD: Original link remains 100% untouched!
 			echo json_encode( array(
 				'success' => true,
@@ -405,10 +501,11 @@ if( $action === 'migrator_process_one' ) {
 		$safe_orig_short = $db->safesql( $row['short_story'] );
 		$safe_orig_full = $db->safesql( $row['full_story'] );
 		
-		// Insert into persistent queue
+		// Insert into persistent queue initially as checking (claimed)
 		$db->query( "INSERT INTO {$queue_table} (post_id, original_url, filecode, state, original_xfields, original_short, original_full, created_at, updated_at, status)
-					VALUES ('{$post_id}', '{$safe_old_url}', '{$safe_new_code}', 'pending', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$now_date}', '{$now_date}', 'pending')" );
+					VALUES ('{$post_id}', '{$safe_old_url}', '{$safe_new_code}', 'pending', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$now_date}', '{$now_date}', 'checking')" );
 		$queue_id = intval( $db->insert_id() );
+		$q_item = array( 'id' => $queue_id, 'filecode' => $new_code );
 		
 		// Immediately query file status (in case file is instantly available/cached)
 		$info_res = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $new_code ) );
@@ -417,6 +514,7 @@ if( $action === 'migrator_process_one' ) {
 			$is_ready = true;
 		} else {
 			$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
+			peestream_release_task( $db, $queue_id, 'pending' );
 			// SAFEGUARD: Original link remains 100% untouched until video is ready!
 			echo json_encode( array(
 				'success' => true,
@@ -461,10 +559,18 @@ if( $action === 'migrator_process_one' ) {
 		$safe_orig_full = $db->safesql( $row['full_story'] );
 		$safe_new_code = $db->safesql( $new_code );
 		
-		// Pre-Migration Backup of Original Post Content
-		$db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
-					VALUES ('{$post_id}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_new_code}', '{$now_date}', 'completed')" );
+		// Pre-Migration Backup of Original Post Content (VERIFIED BEFORE MODIFYING POST)
+		$ins_b = $db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
+					VALUES ('{$post_id}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_new_code}', '{$now_date}', 'completed')", false );
 		$backup_id = intval( $db->insert_id() );
+		if( !$ins_b || $backup_id <= 0 ) {
+			peestream_release_task( $db, $q_item['id'], 'pending', 'Backup insertion failed' );
+			echo json_encode( array(
+				'success' => false,
+				'error' => '[ERROR] Post #' . $post_id . ': Pre-migration backup failed to save. Article modification aborted for safety.'
+			) );
+			exit;
+		}
 		
 		// Precise Surgical Replacement
 		$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
@@ -493,8 +599,18 @@ if( $action === 'migrator_process_one' ) {
 		$safe_short = $db->safesql( $upd_short );
 		$safe_full = $db->safesql( $upd_full );
 		
-		$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$post_id}'" );
-		$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', updated_at='{$now_date}' WHERE post_id='{$post_id}' AND original_url='{$safe_old_url}'" );
+		$upd_post = $db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$post_id}'", false );
+		if( !$upd_post ) {
+			$db->query( "UPDATE {$backup_table} SET status='failed' WHERE id='{$backup_id}'", false );
+			peestream_release_task( $db, $q_item['id'], 'failed', 'Post update query failed' );
+			echo json_encode( array(
+				'success' => false,
+				'error' => '[ERROR] Post #' . $post_id . ': Database error updating post. Replacement aborted.'
+			) );
+			exit;
+		}
+
+		$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', updated_at='{$now_date}' WHERE post_id='{$post_id}' AND original_url='{$safe_old_url}'", false );
 		
 		if( function_exists( 'clear_cache' ) ) {
 			clear_cache( array( 'news_' ) );
@@ -521,14 +637,22 @@ if( $action === 'migrator_check_queue' ) {
 		exit;
 	}
 
-	$q_res = $db->query( "SELECT * FROM {$queue_table} WHERE status IN ('pending', 'queued') ORDER BY id ASC LIMIT 25" );
+	$stale_time = date( 'Y-m-d H:i:s', time() - 300 );
+	$q_res = $db->query( "SELECT * FROM {$queue_table} WHERE status IN ('pending', 'queued') OR (status='checking' AND updated_at < '{$stale_time}') ORDER BY id ASC LIMIT 25" );
 	$now_date = date( 'Y-m-d H:i:s' );
 	$ready_count = 0;
 	$checked_count = 0;
+	$conflict_count = 0;
+	$failed_count = 0;
 	$logs = array();
 	$table = PREFIX . "_post";
 
 	while( $item = $db->get_row( $q_res ) ) {
+		// Atomic claim check: ensure no concurrent worker processes this exact item
+		if( ! peestream_claim_queue_item( $db, $item['id'] ) ) {
+			continue;
+		}
+
 		$checked_count++;
 		$pid = intval( $item['post_id'] );
 		$fc = $item['filecode'];
@@ -548,6 +672,7 @@ if( $action === 'migrator_check_queue' ) {
 				if( !$in_xf && !$in_short && !$in_full ) {
 					$safe_err = $db->safesql( 'Conflict: target original URL was removed or modified by editor.' );
 					$db->query( "UPDATE {$queue_table} SET state='conflict', status='conflict', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+					$conflict_count++;
 					$logs[] = "[CONFLICT] Post #" . $pid . ": Target original URL (" . $old_url . ") was removed or modified by editor. Replacement skipped.";
 					continue;
 				}
@@ -559,9 +684,15 @@ if( $action === 'migrator_check_queue' ) {
 				$safe_old_url = $db->safesql( $old_url );
 				$safe_fc = $db->safesql( $fc );
 
-				// Backup
-				$db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
-							 VALUES ('{$pid}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_fc}', '{$now_date}', 'completed')" );
+				// Pre-migration backup (VERIFIED BEFORE MODIFYING POST)
+				$ins_b = $db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
+							 VALUES ('{$pid}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_fc}', '{$now_date}', 'completed')", false );
+				$backup_id = intval( $db->insert_id() );
+				if( !$ins_b || $backup_id <= 0 ) {
+					peestream_release_task( $db, $item['id'], 'pending', 'Backup insertion failed' );
+					$logs[] = "[ERROR] Post #" . $pid . ": Pre-migration backup failed to save. Article modification aborted for safety.";
+					continue;
+				}
 
 				// Replace
 				$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
@@ -582,14 +713,27 @@ if( $action === 'migrator_check_queue' ) {
 				$safe_short = $db->safesql( $upd_short );
 				$safe_full = $db->safesql( $upd_full );
 
-				$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'" );
+				$upd_post = $db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'", false );
+				if( !$upd_post ) {
+					$db->query( "UPDATE {$backup_table} SET status='failed' WHERE id='{$backup_id}'", false );
+					peestream_release_task( $db, $item['id'], 'failed', 'Post update query failed' );
+					$logs[] = "[ERROR] Post #" . $pid . ": Database error updating post. Replacement aborted.";
+					continue;
+				}
+
 				$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
 				$ready_count++;
 				$logs[] = "[READY] Post #" . $pid . ": Transcoding complete (canplay=1)! PeeStream player attached.";
 			}
 		} elseif( $f_info && isset( $f_info['state'] ) && $f_info['state'] === 'failed' ) {
 			$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+			$failed_count++;
 			$logs[] = "[FAILED] Post #" . $pid . ": Remote transcode failed on PeeStream. Original link preserved.";
+		} else {
+			$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
+			$safe_state = $db->safesql( $cur_state );
+			$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+			peestream_release_task( $db, $item['id'], 'pending' );
 		}
 	}
 
@@ -598,10 +742,13 @@ if( $action === 'migrator_check_queue' ) {
 	}
 
 	echo json_encode( array(
-		'success' => true,
-		'checked_count' => $checked_count,
-		'ready_count' => $ready_count,
-		'logs' => $logs
+		'success'        => true,
+		'checked_count'  => $checked_count,
+		'ready_count'    => $ready_count,
+		'conflict_count' => $conflict_count,
+		'failed_count'   => $failed_count,
+		'logs'           => $logs,
+		'msg'            => sprintf( "Queue check finished. Checked: %d, Ready: %d, Conflicts: %d, Failed: %d", $checked_count, $ready_count, $conflict_count, $failed_count )
 	) );
 	exit;
 }
@@ -616,9 +763,10 @@ if( $action === 'migrator_rollback' ) {
 		exit;
 	}
 	
-	$post_id = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
-	$table = PREFIX . "_post";
-	$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
+	$backup_id = isset( $_POST['backup_id'] ) ? intval( $_POST['backup_id'] ) : 0;
+	$post_id   = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
+	$table     = PREFIX . "_post";
+	$xf_name   = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
 
 	$rollback_single = function( $b ) use ( $db, $table, $cfg, $xf_name, $backup_table ) {
 		$pid = intval( $b['post_id'] );
@@ -671,14 +819,30 @@ if( $action === 'migrator_rollback' ) {
 		return true;
 	};
 
-	if( $post_id > 0 ) {
-		$b = $db->super_query( "SELECT * FROM {$backup_table} WHERE post_id='{$post_id}' AND status='completed' ORDER BY id DESC LIMIT 1" );
+	if( $backup_id > 0 ) {
+		// Rollback specific single backup task
+		$b = $db->super_query( "SELECT * FROM {$backup_table} WHERE id='{$backup_id}' AND status='completed' LIMIT 1" );
 		if( !empty( $b['id'] ) ) {
 			$rollback_single( $b );
 			if( function_exists( 'clear_cache' ) ) clear_cache( array( 'news_' ) );
-			echo json_encode( array( 'success' => true, 'msg' => 'Post #' . $post_id . ' surgically reverted to original video link. Newer editorial text preserved.' ) );
+			echo json_encode( array( 'success' => true, 'backup_id' => $backup_id, 'msg' => 'Backup #' . $backup_id . ' surgically reverted to original link. Newer editorial text preserved.' ) );
 		} else {
-			echo json_encode( array( 'success' => false, 'error' => 'No active backup found for post #' . $post_id ) );
+			echo json_encode( array( 'success' => false, 'error' => 'No active backup found for backup ID #' . $backup_id ) );
+		}
+	} elseif( $post_id > 0 ) {
+		// Rollback all completed backups for post in reverse chronological order
+		$backups_res = $db->query( "SELECT * FROM {$backup_table} WHERE post_id='{$post_id}' AND status='completed' ORDER BY id DESC" );
+		$rolled_cnt = 0;
+		while( $b = $db->get_row( $backups_res ) ) {
+			if( $rollback_single( $b ) ) {
+				$rolled_cnt++;
+			}
+		}
+		if( $rolled_cnt > 0 ) {
+			if( function_exists( 'clear_cache' ) ) clear_cache( array( 'news_' ) );
+			echo json_encode( array( 'success' => true, 'post_id' => $post_id, 'count' => $rolled_cnt, 'msg' => 'Post #' . $post_id . ': ' . $rolled_cnt . ' video links surgically reverted. Newer editorial text preserved.' ) );
+		} else {
+			echo json_encode( array( 'success' => false, 'error' => 'No active backups found for post #' . $post_id ) );
 		}
 	} else {
 		// Rollback all
@@ -705,8 +869,14 @@ if( $action === 'save' ) {
 	}
 	
 	$secret = trim( strip_tags( (string)$_POST['webhook_secret'] ) );
+	$cron_sec = isset( $_POST['cron_secret'] ) ? trim( strip_tags( (string)$_POST['cron_secret'] ) ) : '';
+
 	if( !empty( $secret ) && strlen( $secret ) < 16 ) {
 		$msg_alert = '<div class="alert alert-danger alert-styled-left alert-arrow-left alert-bordered"><b>Error!</b> Webhook secret key must be at least 16 characters long for security.</div>';
+	} elseif( !empty( $cron_sec ) && strlen( $cron_sec ) < 16 ) {
+		$msg_alert = '<div class="alert alert-danger alert-styled-left alert-arrow-left alert-bordered"><b>Error!</b> Cron secret token must be at least 16 characters long for security.</div>';
+	} elseif( !empty( $cron_sec ) && !empty( $secret ) && $cron_sec === $secret ) {
+		$msg_alert = '<div class="alert alert-danger alert-styled-left alert-arrow-left alert-bordered"><b>Error!</b> Cron secret token must be different from Webhook secret token for security isolation.</div>';
 	} else {
 		$save_cfg = array(
 			'api_key' => trim( strip_tags( (string)$_POST['api_key'] ) ),
@@ -721,6 +891,7 @@ if( $action === 'save' ) {
 			'allow_fullscreen' => isset( $_POST['allow_fullscreen'] ) ? '1' : '0',
 			'xfield_name' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)$_POST['xfield_name'] ) ) ),
 			'webhook_secret' => $secret,
+			'cron_secret' => $cron_sec,
 			'auto_create_news' => isset( $_POST['auto_create_news'] ) ? '1' : '0',
 			'default_category' => intval( $_POST['default_category'] ) ?: 1,
 			'moderate_new_posts' => isset( $_POST['moderate_new_posts'] ) ? '1' : '0',
@@ -810,8 +981,11 @@ $val_xfield_name = htmlspecialchars( $cfg['xfield_name'], ENT_QUOTES, 'UTF-8' );
 $val_width = htmlspecialchars( $cfg['width'], ENT_QUOTES, 'UTF-8' );
 $val_height = htmlspecialchars( $cfg['height'], ENT_QUOTES, 'UTF-8' );
 $val_webhook_secret = htmlspecialchars( $cfg['webhook_secret'], ENT_QUOTES, 'UTF-8' );
+$val_cron_secret = htmlspecialchars( !empty($cfg['cron_secret']) ? $cfg['cron_secret'] : '', ENT_QUOTES, 'UTF-8' );
 
 $webhook_public_url = $config['http_home_url'] . 'engine/ajax/peestream_webhook.php?secret=' . $val_webhook_secret;
+$cron_cli_cmd = 'php -f ' . ENGINE_DIR . '/modules/peestream_cron.php';
+$cron_http_url = $config['http_home_url'] . 'engine/modules/peestream_cron.php';
 
 echoheader( "PeeStream Player &amp; Tools", "Official video player and migration suite for DataLife Engine" );
 
@@ -840,6 +1014,11 @@ echo <<<HTML
 				<form method="post" action="" class="form-horizontal">
 					<input type="hidden" name="action" value="save">
 					<input type="hidden" name="user_hash" value="{$dle_login_hash}">
+					<input type="hidden" name="webhook_secret" value="{$val_webhook_secret}">
+					<input type="hidden" name="cron_secret" value="{$val_cron_secret}">
+					<input type="hidden" name="auto_create_news" value="{$cfg['auto_create_news']}">
+					<input type="hidden" name="default_category" value="{$cfg['default_category']}">
+					<input type="hidden" name="moderate_new_posts" value="{$cfg['moderate_new_posts']}">
 
 					<div class="form-group">
 						<label class="control-label col-sm-3 text-semibold">PeeStream API Key:</label>
@@ -1063,6 +1242,31 @@ echo <<<HTML
 					</div>
 
 					<div class="form-group">
+						<label class="control-label col-sm-3 text-semibold">Cron Worker Secret (min 16 chars):</label>
+						<div class="col-sm-9">
+							<div class="input-group">
+								<input type="text" name="cron_secret" id="pst_cron_secret" value="{$val_cron_secret}" class="form-control" placeholder="Strong random token (isolated from webhook secret)">
+								<span class="input-group-btn">
+									<button type="button" class="btn btn-default" onclick="pstGenerateSecret('pst_cron_secret')"><i class="fa fa-magic"></i> Generate</button>
+								</span>
+							</div>
+							<span class="help-block text-muted">Dedicated token for background queue processing. Must be different from the Webhook Secret.</span>
+						</div>
+					</div>
+
+					<div class="form-group">
+						<label class="control-label col-sm-3 text-semibold">Cron Worker Execution:</label>
+						<div class="col-sm-9">
+							<p><strong>Recommended (CLI Crontab):</strong></p>
+							<input type="text" readonly value="{$cron_cli_cmd}" class="form-control" style="background:#f8fafc;font-family:monospace;" onclick="this.select()">
+							<span class="help-block text-muted">Example crontab entry (runs every 2 minutes): <code>*/2 * * * * {$cron_cli_cmd} &gt;/dev/null 2&gt;&amp;1</code></span>
+							<p style="margin-top:10px;"><strong>Alternative (HTTP via POST curl):</strong></p>
+							<input type="text" readonly value="curl -s -X POST -d 'secret={$val_cron_secret}' '{$cron_http_url}'" class="form-control" style="background:#f8fafc;font-family:monospace;" onclick="this.select()">
+							<span class="help-block text-muted">HTTP execution requires POST method and valid <code>cron_secret</code>. GET requests are strictly rejected.</span>
+						</div>
+					</div>
+
+					<div class="form-group">
 						<label class="control-label col-sm-3 text-semibold">Auto-Create News:</label>
 						<div class="col-sm-9">
 							<div class="checkbox">
@@ -1132,7 +1336,7 @@ function pstToggleSecret(id) {
 	}
 }
 
-function pstGenerateSecret() {
+function pstGenerateSecret(targetId) {
 	if (!window.crypto || !window.crypto.getRandomValues) {
 		alert("Cryptographically secure random number generator (window.crypto) is not available in your browser. Please use a modern browser over HTTPS.");
 		return;
@@ -1140,7 +1344,7 @@ function pstGenerateSecret() {
 	var arr = new Uint8Array(24);
 	window.crypto.getRandomValues(arr);
 	var res = Array.from(arr, function(b) { return ('0' + b.toString(16)).slice(-2); }).join('');
-	var el = document.getElementById("pst_wh_secret");
+	var el = document.getElementById(targetId || "pst_wh_secret");
 	if (el) {
 		el.value = res;
 	}
@@ -1176,38 +1380,53 @@ function mgrStartScan() {
 	pstSetBtn(btn, "fa fa-spinner fa-spin", "Scanning Database...");
 	mgrLog("Starting database analysis for verified competitor links...", "#38bdf8");
 	
-	fetch("?mod=peestream&action=migrator_scan&user_hash=" + DLE_HASH)
-		.then(function(r) { return r.json(); })
-		.then(function(data) {
-			btn.disabled = false;
-			pstSetBtn(btn, "fa fa-search", "Scan Again");
-			if(data.success) {
-				mgrQueue = data.items || [];
-				mgrTotal = mgrQueue.length;
-				mgrDone = 0;
-				mgrErrors = 0;
-				
-				document.getElementById("cnt_found").innerText = mgrTotal;
-				document.getElementById("cnt_migrated").innerText = "0";
-				document.getElementById("cnt_errors").innerText = "0";
-				document.getElementById("cnt_progress").innerText = "0%";
-				document.getElementById("mgr_stats_row").style.display = "flex";
-				
-				if(mgrTotal > 0) {
-					mgrLog("Scan completed! Found " + mgrTotal + " articles with verified competitor hoster links.", "#4ade80");
-					document.getElementById("btn_migrator_start").style.display = "inline-block";
+	mgrQueue = [];
+	mgrTotal = 0;
+	mgrDone = 0;
+	mgrErrors = 0;
+
+	function fetchScanPage(page) {
+		fetch("?mod=peestream&action=migrator_scan&page=" + page + "&limit=500&user_hash=" + DLE_HASH)
+			.then(function(r) { return r.json(); })
+			.then(function(data) {
+				if(data.success) {
+					var pageItems = data.items || [];
+					mgrQueue = mgrQueue.concat(pageItems);
+					mgrTotal = mgrQueue.length;
+					document.getElementById("cnt_found").innerText = mgrTotal;
+
+					if(data.has_more) {
+						mgrLog("Page " + page + " scanned (" + pageItems.length + " links found). Fetching next batch...", "#38bdf8");
+						fetchScanPage(page + 1);
+					} else {
+						btn.disabled = false;
+						pstSetBtn(btn, "fa fa-search", "Scan Again");
+						document.getElementById("cnt_migrated").innerText = "0";
+						document.getElementById("cnt_errors").innerText = "0";
+						document.getElementById("cnt_progress").innerText = "0%";
+						document.getElementById("mgr_stats_row").style.display = "flex";
+						
+						if(mgrTotal > 0) {
+							mgrLog("Scan completed! Found total " + mgrTotal + " competitor hoster links across database.", "#4ade80");
+							document.getElementById("btn_migrator_start").style.display = "inline-block";
+						} else {
+							mgrLog("No competitor links found in your database. All videos are clean!", "#a3e635");
+						}
+					}
 				} else {
-					mgrLog("No competitor links found in your database. All videos are clean!", "#a3e635");
+					btn.disabled = false;
+					pstSetBtn(btn, "fa fa-search", "Scan Again");
+					mgrLog("Scan failed: " + (data.error || "Unknown error"), "#f87171");
 				}
-			} else {
-				mgrLog("Scan failed: " + (data.error || "Unknown error"), "#f87171");
-			}
-		})
-		.catch(function(err) {
-			btn.disabled = false;
-			pstSetBtn(btn, "fa fa-search", "Scan Again");
-			mgrLog("Network error: " + err, "#f87171");
-		});
+			})
+			.catch(function(err) {
+				btn.disabled = false;
+				pstSetBtn(btn, "fa fa-search", "Scan Again");
+				mgrLog("Network error: " + err, "#f87171");
+			});
+	}
+
+	fetchScanPage(1);
 }
 
 function mgrCheckPendingQueue() {
@@ -1229,7 +1448,23 @@ function mgrCheckPendingQueue() {
 				pstSetBtn(btn, "fa fa-refresh", "Check Pending Encodings");
 			}
 			if (data.success) {
-				mgrLog(data.msg + " (Pending: " + data.pending + ", Ready: " + data.ready + ", Errors: " + data.errors + ")", "#4ade80");
+				var checked = (typeof data.checked_count !== "undefined") ? data.checked_count : 0;
+				var ready = (typeof data.ready_count !== "undefined") ? data.ready_count : 0;
+				var conflicts = (typeof data.conflict_count !== "undefined") ? data.conflict_count : 0;
+				var failed = (typeof data.failed_count !== "undefined") ? data.failed_count : 0;
+				var summary = "Queue check finished. Checked: " + checked + ", Ready: " + ready;
+				if (conflicts > 0) summary += ", Conflicts: " + conflicts;
+				if (failed > 0) summary += ", Failed: " + failed;
+				mgrLog(summary, "#4ade80");
+				if (Array.isArray(data.logs)) {
+					data.logs.forEach(function(l) {
+						var col = "#e2e8f0";
+						if (l.indexOf("[CONFLICT]") !== -1) col = "#fbbf24";
+						else if (l.indexOf("[FAILED]") !== -1) col = "#f87171";
+						else if (l.indexOf("[READY]") !== -1) col = "#4ade80";
+						mgrLog(l, col);
+					});
+				}
 			} else {
 				mgrLog("Queue check failed: " + (data.error || "Unknown error"), "#f87171");
 			}
