@@ -175,16 +175,18 @@ if( !function_exists( 'peestream_get_affected_rows' ) ) {
 	}
 }
 
-// Unified atomic queue item claim by ID (with stale lock recovery)
+// Unified atomic queue item claim by ID (with owner_token fencing and stale lock recovery)
 if( !function_exists( 'peestream_claim_queue_item' ) ) {
-	function peestream_claim_queue_item( $db, $queue_id, $timeout_seconds = 300 ) {
+	function peestream_claim_queue_item( $db, $queue_id, $owner_token = '', $timeout_seconds = 300 ) {
 		$qid = intval( $queue_id );
 		if( $qid <= 0 ) return false;
 		$now_date = date( 'Y-m-d H:i:s' );
 		$stale_time = date( 'Y-m-d H:i:s', time() - $timeout_seconds );
+		$safe_token = $db->safesql( $owner_token );
 		$queue_table = PREFIX . "_peestream_queue";
+		$token_set = !empty( $owner_token ) ? ", owner_token='{$safe_token}'" : "";
 		$sql = "UPDATE {$queue_table} 
-		        SET status='checking', updated_at='{$now_date}' 
+		        SET status='checking'{$token_set}, updated_at='{$now_date}' 
 		        WHERE id='{$qid}' 
 		          AND (status IN ('pending', 'queued') OR (status='checking' AND updated_at < '{$stale_time}'))";
 		$res = $db->query( $sql, false );
@@ -193,16 +195,134 @@ if( !function_exists( 'peestream_claim_queue_item' ) ) {
 	}
 }
 
-// Release claimed task with specific status and optional error message
+// Release claimed task with specific status, error message, and strict owner_token check
 if( !function_exists( 'peestream_release_task' ) ) {
-	function peestream_release_task( $db, $queue_id, $new_status = 'pending', $error_msg = '' ) {
+	function peestream_release_task( $db, $queue_id, $owner_token = '', $new_status = 'pending', $error_msg = '' ) {
 		$qid = intval( $queue_id );
-		if( $qid <= 0 ) return;
+		if( $qid <= 0 ) return false;
 		$now_date = date( 'Y-m-d H:i:s' );
 		$safe_status = $db->safesql( $new_status );
 		$safe_err = $db->safesql( $error_msg );
+		$safe_token = $db->safesql( $owner_token );
 		$queue_table = PREFIX . "_peestream_queue";
-		$db->query( "UPDATE {$queue_table} SET status='{$safe_status}', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$qid}'", false );
+		$where_token = !empty( $owner_token ) ? " AND (owner_token='{$safe_token}' OR owner_token='')" : "";
+		$sql = "UPDATE {$queue_table} SET status='{$safe_status}', owner_token='', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$qid}'{$where_token}";
+		$res = $db->query( $sql, false );
+		return ( $res && peestream_get_affected_rows( $db ) > 0 );
+	}
+}
+
+// Optimistic post updater: serializes concurrent modifications on the same post without data loss
+if( !function_exists( 'peestream_apply_post_replacement' ) ) {
+	function peestream_apply_post_replacement( $db, $post_id, $old_url, $new_code, $cfg, &$backup_id = 0 ) {
+		$pid = intval( $post_id );
+		if( $pid <= 0 || empty( $old_url ) || empty( $new_code ) ) {
+			return array( 'success' => false, 'error' => 'Invalid parameters for post replacement.' );
+		}
+
+		$table = PREFIX . "_post";
+		$backup_table = PREFIX . "_peestream_backups";
+		$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
+		$player_domain = !empty( $cfg['player_domain'] ) ? rtrim( $cfg['player_domain'], '/' ) : 'https://peeplayer.com';
+		$new_embed = $player_domain . '/e/' . $new_code;
+		$safe_new_code = $db->safesql( $new_code );
+		$safe_old_url = $db->safesql( $old_url );
+		$max_retries = 3;
+
+		for( $attempt = 1; $attempt <= $max_retries; $attempt++ ) {
+			$post = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'" );
+			if( empty( $post['id'] ) ) {
+				return array( 'success' => false, 'error' => "Post #{$pid} not found in database." );
+			}
+
+			// Conflict check: Ensure original_url still exists in post
+			$in_xf = ( strpos( $post['xfields'], $old_url ) !== false );
+			$in_short = ( strpos( $post['short_story'], $old_url ) !== false );
+			$in_full = ( strpos( $post['full_story'], $old_url ) !== false );
+
+			if( !$in_xf && !$in_short && !$in_full ) {
+				return array(
+					'success' => false,
+					'conflict' => true,
+					'error' => "Conflict: Target original link (" . htmlspecialchars( $old_url, ENT_QUOTES, 'UTF-8' ) . ") was removed or modified by editor."
+				);
+			}
+
+			// Pre-migration backup of current snapshot
+			$now_date = date( 'Y-m-d H:i:s' );
+			$safe_orig_xf = $db->safesql( $post['xfields'] );
+			$safe_orig_short = $db->safesql( $post['short_story'] );
+			$safe_orig_full = $db->safesql( $post['full_story'] );
+
+			$ins_b = $db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
+						VALUES ('{$pid}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_new_code}', '{$now_date}', 'in_progress')", false );
+			$cur_backup_id = intval( $db->insert_id() );
+			if( !$ins_b || $cur_backup_id <= 0 ) {
+				return array( 'success' => false, 'error' => "Pre-migration backup failed to save. Article modification aborted for safety." );
+			}
+
+			// Perform surgical replacement on current snapshot
+			$upd_xf = $post['xfields'];
+			$upd_short = $post['short_story'];
+			$upd_full = $post['full_story'];
+
+			if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
+				$xf_arr = xfieldsdataload( $upd_xf );
+				$target_field_found = false;
+				foreach( $xf_arr as $k => $v ) {
+					if( strpos( (string)$v, $old_url ) !== false ) {
+						$xf_arr[$k] = str_replace( $old_url, $new_code, $v );
+						$target_field_found = true;
+					}
+				}
+				// Primary player assignment:
+				// If the targeted field was $xf_name, it was already updated above.
+				// If targeted field was not $xf_name, set $xf_name ONLY if it's currently empty (do not clobber existing primary player)
+				if( empty( $xf_arr[$xf_name] ) ) {
+					$xf_arr[$xf_name] = $new_code;
+				}
+				$upd_xf = xfieldsdatasave( $xf_arr );
+			} else {
+				if( strpos( $upd_xf, $old_url ) !== false ) {
+					$upd_xf = str_replace( $old_url, $new_code, $upd_xf );
+				}
+			}
+
+			if( strpos( $upd_full, $old_url ) !== false ) {
+				$upd_full = str_replace( $old_url, $new_embed, $upd_full );
+			}
+			if( strpos( $upd_short, $old_url ) !== false ) {
+				$upd_short = str_replace( $old_url, $new_embed, $upd_short );
+			}
+
+			$safe_upd_xf = $db->safesql( $upd_xf );
+			$safe_upd_short = $db->safesql( $upd_short );
+			$safe_upd_full = $db->safesql( $upd_full );
+
+			// Optimistic atomic update: check that post was not modified concurrently
+			$upd_sql = "UPDATE {$table} 
+			            SET xfields='{$safe_upd_xf}', short_story='{$safe_upd_short}', full_story='{$safe_upd_full}' 
+			            WHERE id='{$pid}' 
+			              AND xfields='{$safe_orig_xf}' 
+			              AND short_story='{$safe_orig_short}' 
+			              AND full_story='{$safe_orig_full}'";
+			$upd_post = $db->query( $upd_sql, false );
+			$aff = peestream_get_affected_rows( $db );
+
+			if( $upd_post && $aff > 0 ) {
+				// Success! Promote backup to completed
+				$db->query( "UPDATE {$backup_table} SET status='completed' WHERE id='{$cur_backup_id}'", false );
+				$backup_id = $cur_backup_id;
+				return array( 'success' => true, 'backup_id' => $backup_id, 'filecode' => $new_code );
+			}
+
+			// Concurrent modification occurred between read and update!
+			// Mark temporary in_progress backup as aborted and retry
+			$db->query( "UPDATE {$backup_table} SET status='aborted' WHERE id='{$cur_backup_id}'", false );
+			usleep( 10000 ); // 10ms backoff
+		}
+
+		return array( 'success' => false, 'error' => "Optimistic post update lock contention on post #{$pid} after {$max_retries} attempts. Deferring task." );
 	}
 }
 
@@ -286,8 +406,11 @@ $failed_count = 0;
 $logs = array();
 
 while( $item = $db->get_row( $q_res ) ) {
-	// Atomic claim check: ensure no concurrent worker (cron or manual AJAX) processes this item
-	if( ! peestream_claim_queue_item( $db, $item['id'] ) ) {
+	$worker_token = bin2hex( random_bytes( 16 ) );
+	$safe_token = $db->safesql( $worker_token );
+
+	// Atomic claim check with owner_token fencing: ensure no concurrent worker (cron or manual AJAX) processes this item
+	if( ! peestream_claim_queue_item( $db, $item['id'], $worker_token ) ) {
 		continue;
 	}
 
@@ -300,78 +423,34 @@ while( $item = $db->get_row( $q_res ) ) {
 	$f_info = peestream_extract_file_info( $info, $fc );
 	
 	if( $f_info && isset( $f_info['canplay'] ) && intval( $f_info['canplay'] ) === 1 ) {
-		// Video ready: check post content and conflict
-		$post = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'" );
-		if( !empty( $post['id'] ) ) {
-			$in_xf = ( strpos( $post['xfields'], $old_url ) !== false );
-			$in_short = ( strpos( $post['short_story'], $old_url ) !== false );
-			$in_full = ( strpos( $post['full_story'], $old_url ) !== false );
-
-			if( !$in_xf && !$in_short && !$in_full ) {
-				$safe_err = $db->safesql( 'Conflict: target original URL was removed or modified by editor.' );
-				$db->query( "UPDATE {$queue_table} SET state='conflict', status='conflict', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
-				$conflict_count++;
-				$logs[] = "[CONFLICT] Post #" . $pid . ": Target original URL (" . $old_url . ") was removed or modified by editor. Replacement skipped.";
-				continue;
-			}
-
-			$embed_url = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $fc;
-			$safe_orig_xf = $db->safesql( $post['xfields'] );
-			$safe_orig_short = $db->safesql( $post['short_story'] );
-			$safe_orig_full = $db->safesql( $post['full_story'] );
-			$safe_old_url = $db->safesql( $old_url );
-			$safe_fc = $db->safesql( $fc );
-
-			// Pre-migration backup (VERIFIED BEFORE MODIFYING POST)
-			$ins_b = $db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
-						 VALUES ('{$pid}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_fc}', '{$now_date}', 'completed')", false );
-			$backup_id = intval( $db->insert_id() );
-			if( !$ins_b || $backup_id <= 0 ) {
-				peestream_release_task( $db, $item['id'], 'pending', 'Backup insertion failed' );
-				$logs[] = "[ERROR] Post #" . $pid . ": Pre-migration backup failed to save. Article modification aborted for safety.";
-				continue;
-			}
-
-			// Replace
-			$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
-			$upd_xf = $post['xfields'];
-			$upd_short = $post['short_story'];
-			$upd_full = $post['full_story'];
-
-			if( strpos( $upd_xf, $old_url ) !== false ) $upd_xf = str_replace( $old_url, $fc, $upd_xf );
-			if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
-				$xf_arr = xfieldsdataload( $upd_xf );
-				$xf_arr[$xf_name] = $fc;
-				$upd_xf = xfieldsdatasave( $xf_arr );
-			}
-			if( strpos( $upd_full, $old_url ) !== false ) $upd_full = str_replace( $old_url, $embed_url, $upd_full );
-			if( strpos( $upd_short, $old_url ) !== false ) $upd_short = str_replace( $old_url, $embed_url, $upd_short );
-
-			$safe_xf = $db->safesql( $upd_xf );
-			$safe_short = $db->safesql( $upd_short );
-			$safe_full = $db->safesql( $upd_full );
-
-			$upd_post = $db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'", false );
-			if( !$upd_post ) {
-				$db->query( "UPDATE {$backup_table} SET status='failed' WHERE id='{$backup_id}'", false );
-				peestream_release_task( $db, $item['id'], 'failed', 'Post update query failed' );
-				$logs[] = "[ERROR] Post #" . $pid . ": Database error updating post. Replacement aborted.";
-				continue;
-			}
-
-			$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+		// Video is verified READY (canplay=1)! Apply optimistic post replacement
+		$backup_id = 0;
+		$repl_res = peestream_apply_post_replacement( $db, $pid, $old_url, $fc, $cfg, $backup_id );
+		if( $repl_res['success'] ) {
+			$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', owner_token='', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
 			$ready_count++;
 			$logs[] = "[READY] Post #" . $pid . ": Transcoding complete (canplay=1)! PeeStream player attached.";
+		} else {
+			if( !empty( $repl_res['conflict'] ) ) {
+				$safe_err = $db->safesql( $repl_res['error'] );
+				$db->query( "UPDATE {$queue_table} SET state='conflict', status='conflict', owner_token='', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
+				$conflict_count++;
+				$logs[] = "[CONFLICT] Post #" . $pid . ": Target original URL (" . $old_url . ") was removed or modified by editor. Replacement skipped.";
+			} else {
+				peestream_release_task( $db, $item['id'], $worker_token, 'failed', $repl_res['error'] );
+				$failed_count++;
+				$logs[] = "[ERROR] Post #" . $pid . ": " . $repl_res['error'];
+			}
 		}
 	} elseif( $f_info && isset( $f_info['state'] ) && $f_info['state'] === 'failed' ) {
-		$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+		$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', owner_token='', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
 		$failed_count++;
 		$logs[] = "[FAILED] Post #" . $pid . ": Remote transcode failed on PeeStream. Original link preserved.";
 	} else {
 		$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
 		$safe_state = $db->safesql( $cur_state );
-		$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
-		peestream_release_task( $db, $item['id'], 'pending' );
+		$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
+		peestream_release_task( $db, $item['id'], $worker_token, 'pending' );
 	}
 }
 

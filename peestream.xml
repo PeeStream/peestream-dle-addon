@@ -3,7 +3,7 @@
 	<name>PeeStream Player &amp; Tools</name>
 	<description>Official PeeStream high-performance video player, upload tools and safe competitor auto-migrator for DataLife Engine.</description>
 	<icon>engine/skins/images/peestream/icon.png</icon>
-	<version>1.0.1</version>
+	<version>1.0.2</version>
 	<dleversion>13.0-17.3</dleversion>
 	<versioncompare>greater</versioncompare>
 	<upgradeurl></upgradeurl>
@@ -43,9 +43,11 @@ CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_queue (
 	original_short MEDIUMTEXT,
 	original_full MEDIUMTEXT,
 	status VARCHAR(32) NOT NULL DEFAULT 'pending',
+	owner_token VARCHAR(64) NOT NULL DEFAULT '',
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
 	error_msg VARCHAR(255) NOT NULL DEFAULT '',
+	UNIQUE KEY uq_post_orig (post_id, original_url(191)),
 	INDEX idx_post_id (post_id),
 	INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]></mysqlinstall>
@@ -84,9 +86,11 @@ CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_queue (
 	original_short MEDIUMTEXT,
 	original_full MEDIUMTEXT,
 	status VARCHAR(32) NOT NULL DEFAULT 'pending',
+	owner_token VARCHAR(64) NOT NULL DEFAULT '',
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
 	error_msg VARCHAR(255) NOT NULL DEFAULT '',
+	UNIQUE KEY uq_post_orig (post_id, original_url(191)),
 	INDEX idx_post_id (post_id),
 	INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]></mysqlupgrade>

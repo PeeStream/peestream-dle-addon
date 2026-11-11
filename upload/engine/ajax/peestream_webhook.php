@@ -239,11 +239,12 @@ if ( $reserved ) {
 				) );
 				exit;
 			}
-		} elseif ( $existing['status'] === 'failed' ) {
-			// Controlled retry for failed events with atomic CAS
+		} elseif ( in_array( $existing['status'], array( 'failed', 'ambiguous', 'ignored_no_match' ), true ) ) {
+			// Controlled retry for failed, ambiguous, or ignored_no_match events with atomic CAS
 			$safe_id = intval( $existing['id'] );
 			$safe_prev_time = $db->safesql( $existing['received_at'] );
-			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$safe_id}' AND status = 'failed' AND received_at = '{$safe_prev_time}'", false );
+			$safe_prev_status = $db->safesql( $existing['status'] );
+			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$safe_id}' AND status = '{$safe_prev_status}' AND received_at = '{$safe_prev_time}'", false );
 			$aff = peestream_get_affected_rows( $db );
 			if ( $aff > 0 ) {
 				$has_lock = true;
@@ -381,6 +382,36 @@ if ( ! empty( $matched_post['id'] ) ) {
 
 // 11. Auto-create news if enabled, but with strict safety (Approved or Unapproved moderation queue)
 if ( ! empty( $cfg['auto_create_news'] ) && $cfg['auto_create_news'] == '1' ) {
+	// Re-check if post already exists from an earlier attempt (e.g. crash after post insert but before audit update)
+	$existing_post_id = 0;
+	if ( ! empty( $existing['post_id'] ) && intval( $existing['post_id'] ) > 0 ) {
+		$check_p = $db->super_query( "SELECT id FROM {$table} WHERE id = '" . intval( $existing['post_id'] ) . "' LIMIT 1" );
+		if ( ! empty( $check_p['id'] ) ) {
+			$existing_post_id = intval( $check_p['id'] );
+		}
+	}
+	if ( ! $existing_post_id ) {
+		$check_fc = $db->super_query( "SELECT id FROM {$table} WHERE xfields LIKE '%" . $db->safesql( $file_code ) . "%' LIMIT 1" );
+		if ( ! empty( $check_fc['id'] ) ) {
+			$existing_post_id = intval( $check_fc['id'] );
+		}
+	}
+
+	if ( $existing_post_id > 0 ) {
+		// Existing post found: avoid duplicate post creation on retry
+		$db->query( "UPDATE {$audit_table} SET post_id = '{$existing_post_id}', status = 'processed', received_at = '{$now_date}' 
+					WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}'" );
+		echo json_encode( array(
+			'success'   => true,
+			'action'    => 'reused_existing',
+			'post_id'   => $existing_post_id,
+			'file_code' => $file_code,
+			'event'     => $event,
+			'msg'       => 'Re-used existing post ID ' . $existing_post_id . ' on webhook retry. Duplicate post creation prevented.'
+		) );
+		exit;
+	}
+
 	$new_title = $title;
 	if ( $season > 0 && $episode > 0 ) {
 		$new_title .= sprintf( ' (Season %d, Episode %d)', $season, $episode );

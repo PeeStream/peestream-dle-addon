@@ -56,7 +56,7 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
 ## Installation Guide
 
 ### Method A: DLE Plugin Manager (Recommended)
-1. Download `dle_peestream_v1.0.1.zip` and extract the files.
+1. Download `dle_peestream_v1.0.2.zip` and extract the files.
 2. In your DLE Administration Panel, navigate to **Plugin Management** (`?mod=plugins`).
 3. Click **Upload Plugin** and select `peestream.xml`.
 4. Upload the `engine/` and `language/` directories to your server root (if not automatically extracted).
@@ -102,9 +102,11 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
        original_short MEDIUMTEXT,
        original_full MEDIUMTEXT,
        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+       owner_token VARCHAR(64) NOT NULL DEFAULT '',
        created_at DATETIME NOT NULL,
        updated_at DATETIME NOT NULL,
        error_msg VARCHAR(255) NOT NULL DEFAULT '',
+       UNIQUE KEY uq_post_orig (post_id, original_url(191)),
        INDEX idx_post_id (post_id),
        INDEX idx_status (status)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -138,9 +140,9 @@ The Auto-Migrator processes videos asynchronously so large batches do not time o
      ```
    - **HTTP / Webhook Cron (cURL):**
      ```bash
-     */2 * * * * curl -s "https://example.com/engine/modules/peestream_cron.php?secret=YOUR_WEBHOOK_SECRET" >/dev/null 2>&1
+     */2 * * * * curl -s -X POST -d "secret=YOUR_CRON_SECRET" "https://example.com/engine/modules/peestream_cron.php" >/dev/null 2>&1
      ```
-   - The worker incorporates non-blocking process locking (`flock`), strict conflict checks (ensuring target competitor URLs haven't been removed by editors), pre-replacement article backups, and automatic cache clearing.
+   - The worker incorporates process locking, atomic task fencing (`owner_token`), optimistic article updates, strict conflict checks, pre-replacement article backups, and automatic cache clearing.
 
 ---
 
@@ -169,12 +171,21 @@ Example usage in `fullstory.tpl`:
 
 ## Verification & Integrity
 
-- **Distribution Archive:** `dle_peestream_v1.0.1.zip`
-- **SHA-256 Checksum:** See `SHA256SUMS` file (verification: `sha256sum dle_peestream_v1.0.1.zip`)
+- **Distribution Archive:** `dle_peestream_v1.0.2.zip`
+- **SHA-256 Checksum:** See `SHA256SUMS` file (verification: `sha256sum dle_peestream_v1.0.2.zip`)
 
 ---
 
 ## Changelog
+
+### Version 1.0.2 (Multi-Video Integrity, Concurrency Fencing & Rollback Hardening)
+- **P0 Multi-Video Migration Integrity & Optimistic Locking:** Replaced uncoordinated article updates with `peestream_apply_post_replacement()` incorporating optimistic concurrency verification (`WHERE id = ... AND xfields = ... AND short_story = ... AND full_story = ...`) with automatic retry loop (up to 3 attempts). Multiple concurrent ready videos in the same article serialize safely without overwriting each other.
+- **P0 Idempotent Queue Pre-Reservation & Unique Constraint:** Added `UNIQUE KEY uq_post_orig (post_id, original_url(191))` to `{PREFIX}_peestream_queue`. The migrator inserts an atomic reservation before calling `api/upload/url`, eliminating duplicate uploads to PeeStream from concurrent race conditions. Existing installations are automatically deduplicated before applying the unique index.
+- **P1 Owner Token Task Fencing:** Added `owner_token VARCHAR(64)` fencing to `peestream_claim_task()`, `peestream_claim_queue_item()`, and `peestream_release_task()`. Tasks can only be released or finalized by the active owner process, preventing expired or timed-out workers from stomping on active worker locks.
+- **P1 Targeted Field Surgical Updates & Primary Player Preservation:** Surgical replacement identifies the exact xfield containing the competitor link and updates only that specific field. Preserves existing primary player fields (`peestream`) when migrating secondary links.
+- **P1 Field-Specific Rollback with Multi-Link Independence:** Rollback restores original field values from `original_xfields` while verifying the current value still contains the migrated video. For posts with multiple migrated links, rolling back a single link leaves all other migrated links and newer editorial changes 100% intact.
+- **P1 Webhook Retry for Ambiguous & Ignored Events:** Webhook receiver allows atomic CAS takeover retry for events in `ambiguous` and `ignored_no_match` states after manual administrative resolution. Prevents duplicate article creation on retry by checking existing post IDs and `file_code` post attachments.
+- **P1 Controlled Database Migrations:** Moved duplicate webhook row cleanup out of everyday administrative runtime code into conditional schema migrations executed only when the unique index is missing.
 
 ### Version 1.0.1 (Security & Functionality Hardening)
 - **P0 Canonical Database Schema & Migrations:** Unified canonical database schema across XML manifest, runtime, and upgrade routines. Added automated `ALTER TABLE` migrations for existing installations (`url` -> `original_url`, `file_code` -> `filecode`, `state`, `original_xfields`, and `UNIQUE KEY uq_fc_event`).
