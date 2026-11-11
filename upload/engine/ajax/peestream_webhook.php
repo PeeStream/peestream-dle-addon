@@ -108,6 +108,12 @@ $db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
 	INDEX idx_ip_time (ip, received_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
 
+// Runtime ALTER TABLE migration: ensure UNIQUE index exists on older tables
+$idx_check = $db->query( "SHOW INDEX FROM {$audit_table} WHERE Key_name = 'uq_fc_event'", false );
+if ( ! $idx_check || ( method_exists( $db, 'num_rows' ) ? ! $db->num_rows( $idx_check ) : false ) ) {
+	$db->query( "ALTER TABLE {$audit_table} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
+}
+
 // Rate Limiting: Max 60 requests per minute per IP
 $safe_ip = $db->safesql( $client_ip );
 $rate_check = $db->super_query( "SELECT COUNT(*) as cnt FROM {$audit_table} WHERE ip = '{$safe_ip}' AND received_at > DATE_SUB(NOW(), INTERVAL 1 MINUTE)" );
@@ -170,40 +176,71 @@ if ( ! empty( $data['poster'] ) && preg_match( '#^https?://#i', $data['poster'] 
 	$poster_url = trim( (string)$data['poster_url'] );
 }
 
-// 8. Replay Protection: Check if this file_code & event was already processed
+// 8. Atomic Reservation & Idempotency Check (Prevents TOCTOU Race Conditions)
 $safe_fc = $db->safesql( $file_code );
 $safe_event = $db->safesql( $event );
-$replay_check = $db->super_query( "SELECT id, post_id FROM {$audit_table} WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}' LIMIT 1" );
-if ( $replay_check && intval( $replay_check['id'] ) > 0 ) {
-	echo json_encode( array(
-		'success'   => true,
-		'action'    => 'replay_ignored',
-		'post_id'   => intval( $replay_check['post_id'] ),
-		'file_code' => $file_code,
-		'msg'       => 'Duplicate webhook event received. Video has already been processed.'
-	) );
-	exit;
+$now_date = date( 'Y-m-d H:i:s' );
+
+// Attempt atomic reservation before modifying any post content
+$reserved = $db->query( "INSERT INTO {$audit_table} (file_code, event, post_id, ip, received_at, status) 
+			VALUES ('{$safe_fc}', '{$safe_event}', 0, '{$safe_ip}', '{$now_date}', 'processing')", false );
+
+if ( ! $reserved ) {
+	// Key already exists - inspect current state
+	$existing = $db->super_query( "SELECT id, post_id, status, received_at FROM {$audit_table} WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}' LIMIT 1" );
+	if ( $existing ) {
+		if ( $existing['status'] === 'processed' ) {
+			echo json_encode( array(
+				'success'   => true,
+				'action'    => 'replay_ignored',
+				'post_id'   => intval( $existing['post_id'] ),
+				'file_code' => $file_code,
+				'msg'       => 'Duplicate webhook event received. Video has already been processed.'
+			) );
+			exit;
+		} elseif ( $existing['status'] === 'processing' ) {
+			$diff = time() - strtotime( $existing['received_at'] );
+			if ( $diff < 60 ) {
+				echo json_encode( array(
+					'success'   => true,
+					'action'    => 'concurrent_ignored',
+					'file_code' => $file_code,
+					'msg'       => 'Webhook event is currently being processed concurrently. Replay ignored.'
+				) );
+				exit;
+			}
+			// Timed out processing lock (>60s) - take over reservation
+			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$existing['id']}'" );
+		} elseif ( $existing['status'] === 'failed' ) {
+			// Controlled retry for failed events
+			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$existing['id']}'" );
+		}
+	}
 }
 
-$now_date = date( 'Y-m-d H:i:s' );
 $xf_name = ! empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
 $table = PREFIX . '_post';
 
-// 9. Match News Item via Strict IMDb ID ONLY (Unpack xfields, reject ambiguous matches)
+// 9. Match News Item via Strict IMDb ID ONLY (Unpack xfields, restrict to identifier fields)
 $matched_post = null;
 if ( ! empty( $imdb_id ) ) {
 	$safe_imdb = $db->safesql( $imdb_id );
-	// Look for candidate posts containing the string in xfields
-	$cand_query = $db->query( "SELECT id, title, xfields, short_story, full_story, category FROM {$table} WHERE xfields LIKE '%{$safe_imdb}%' ORDER BY id DESC LIMIT 25" );
+	// Look for candidate posts containing the string in xfields (search up to 500 candidates)
+	$cand_query = $db->query( "SELECT id, title, xfields, short_story, full_story, category FROM {$table} WHERE xfields LIKE '%{$safe_imdb}%' ORDER BY id DESC LIMIT 500" );
 	
 	$strictly_matched_posts = array();
+	$allowed_imdb_fields = array( 'imdb', 'imdb_id', 'imdbid', 'id_imdb', 'imdb_code' );
+	if( !empty( $cfg['xfield_imdb'] ) ) {
+		$allowed_imdb_fields[] = strtolower( trim( (string)$cfg['xfield_imdb'] ) );
+	}
+
 	while( $cand_row = $db->get_row( $cand_query ) ) {
 		$xf_arr = function_exists( 'xfieldsdataload' ) ? xfieldsdataload( $cand_row['xfields'] ) : array();
 		$found_exact = false;
 		
 		if ( ! empty( $xf_arr ) && is_array( $xf_arr ) ) {
 			foreach ( $xf_arr as $xf_k => $xf_v ) {
-				if ( strcasecmp( trim( (string)$xf_v ), $imdb_id ) === 0 ) {
+				if ( in_array( strtolower( (string)$xf_k ), $allowed_imdb_fields, true ) && strcasecmp( trim( (string)$xf_v ), $imdb_id ) === 0 ) {
 					$found_exact = true;
 					break;
 				}
@@ -213,7 +250,7 @@ if ( ! empty( $imdb_id ) ) {
 			$parts = explode( '||', (string)$cand_row['xfields'] );
 			foreach ( $parts as $p ) {
 				$pair = explode( '|', $p );
-				if ( isset( $pair[1] ) && strcasecmp( trim( $pair[1] ), $imdb_id ) === 0 ) {
+				if ( isset( $pair[0] ) && in_array( strtolower( trim( $pair[0] ) ), $allowed_imdb_fields, true ) && isset( $pair[1] ) && strcasecmp( trim( $pair[1] ), $imdb_id ) === 0 ) {
 					$found_exact = true;
 					break;
 				}
@@ -229,6 +266,7 @@ if ( ! empty( $imdb_id ) ) {
 		$matched_post = $strictly_matched_posts[0];
 	} elseif ( count( $strictly_matched_posts ) > 1 ) {
 		// Ambiguous match: multiple posts share this IMDb ID. Do NOT update randomly!
+		$db->query( "UPDATE {$audit_table} SET status = 'ambiguous' WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}'" );
 		http_response_code( 409 );
 		echo json_encode( array(
 			'success' => false,
@@ -268,10 +306,9 @@ if ( ! empty( $matched_post['id'] ) ) {
 		clear_cache( array( 'news_' ) );
 	}
 
-	// Atomic Audit record insertion
-	$db->query( "INSERT INTO {$audit_table} (file_code, event, post_id, ip, received_at, status) 
-				VALUES ('{$safe_fc}', '{$safe_event}', '{$post_id}', '{$safe_ip}', '{$now_date}', 'processed')
-				ON DUPLICATE KEY UPDATE status = 'processed', post_id = '{$post_id}'" );
+	// Finalize audit record to processed
+	$db->query( "UPDATE {$audit_table} SET post_id = '{$post_id}', status = 'processed', received_at = '{$now_date}' 
+				WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}'" );
 
 	echo json_encode( array(
 		'success'   => true,
@@ -321,8 +358,8 @@ if ( ! empty( $cfg['auto_create_news'] ) && $cfg['auto_create_news'] == '1' ) {
 		clear_cache( array( 'news_' ) );
 	}
 
-	$db->query( "INSERT INTO {$audit_table} (file_code, event, post_id, ip, received_at, status) 
-				VALUES ('{$safe_fc}', '{$safe_event}', '{$inserted_id}', '{$safe_ip}', '{$now_date}', 'processed')" );
+	$db->query( "UPDATE {$audit_table} SET post_id = '{$inserted_id}', status = 'processed', received_at = '{$now_date}' 
+				WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}'" );
 
 	echo json_encode( array(
 		'success'   => true,
@@ -337,8 +374,8 @@ if ( ! empty( $cfg['auto_create_news'] ) && $cfg['auto_create_news'] == '1' ) {
 }
 
 // 12. No IMDb match and auto-create disabled -> Log as ignored for review
-$db->query( "INSERT INTO {$audit_table} (file_code, event, post_id, ip, received_at, status) 
-			VALUES ('{$safe_fc}', '{$safe_event}', 0, '{$safe_ip}', '{$now_date}', 'ignored_no_match')" );
+$db->query( "UPDATE {$audit_table} SET status = 'ignored_no_match', received_at = '{$now_date}' 
+			WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}'" );
 
 echo json_encode( array(
 	'success'   => true,

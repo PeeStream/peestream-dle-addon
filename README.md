@@ -153,17 +153,17 @@ Example usage in `fullstory.tpl`:
 ## Changelog
 
 ### Version 1.0.1 (Security & Functionality Hardening)
-- **P0 Security & Webhook Hardening:** Strict webhook rejection if secret is unconfigured or < 16 characters (`hash_equals`). Added rate limiting (60 req/min), atomic replay protection with `UNIQUE KEY uq_fc_event (file_code, event)`, and event whitelist (`video_ready`, `new_episode_ready`, `movie_ready`).
-- **P0 XSS Protection:** Complete refactor of editor modal JS and migrator logs to use DOM `textContent` and `createElement`, removing unescaped HTML injections.
-- **P0 CSRF & Permissions:** Mandatory `dle_login_hash` verification for all state-changing AJAX requests. Enforced strict 0644 config file permissions.
-- **P0 Strict IMDb Matching:** Webhook strictly unpacks custom fields using `xfieldsdataload()` and matches against the actual IMDb ID value. Ambiguous matches (>1 article) return 409 Conflict for manual review to prevent wrong overwrites.
-- **P0 Auto-Init Secret:** Fixed automatic generation of strong 48-hex webhook secret during plugin installation and admin panel bootstrap even if configuration file is pre-packaged. Secret generator upgraded to `window.crypto.getRandomValues`.
-- **P1 Safe Auto-Migrator & CanPlay Verification:** Migrator now schedules remote upload and checks `/api/file/info` for `canplay=1`. The original DLE article is modified ONLY when video playback is 100% verified. If upload is processing or fails, original links remain untouched.
+- **P0 Canonical Database Schema & Migrations:** Unified canonical database schema across XML manifest, runtime, and upgrade routines. Added automated `ALTER TABLE` migrations for existing installations (`url` -> `original_url`, `file_code` -> `filecode`, `state`, `original_xfields`, and `UNIQUE KEY uq_fc_event`).
+- **P0 Secret Distribution Safeguard:** Stripped hardcoded secret from repository and distribution packages. Each installation generates a unique 48-hex cryptographic secret via `random_bytes(24)`, while preserving existing user keys during upgrades.
+- **P0 PeeStream API `/api/file/info` Array Payload:** Added `peestream_extract_file_info()` to properly handle the PeeStream API array response `[{filecode, canplay, ...}]` across all polling and verification paths.
+- **P0 Atomic Webhook Idempotency:** Implemented atomic event pre-reservation before modifying post content, preventing TOCTOU race conditions from concurrent duplicate webhook deliveries.
+- **P0 Strict IMDb Identifier Restriction:** Restricted IMDb matching to dedicated identifier extra fields (`imdb`, `imdb_id`, `imdbid`), rejecting general body or note fields, and rejecting ambiguous multiple matches with `409 Conflict`.
+- **P1 Surgical Rollback:** Rollback engine reverts exclusively the exact embed URL and specific extra field without raw string replace across the article, preserving all subsequent editorial updates.
+- **P1 Cryptographic JS Secret Generator:** Removed `Math.random()` fallback; secret generation strictly requires `window.crypto.getRandomValues`.
+- **P1 Safe Auto-Migrator & CanPlay Verification:** Migrator schedules remote upload and checks `/api/file/info` for `canplay=1`. The original DLE article is modified ONLY when video playback is 100% verified. If upload is processing or fails, original links remain untouched.
 - **P1 Persistent Transcode Queue:** Added persistent `{PREFIX}_peestream_queue` table with "Check Pending Encodings" background queue manager for async processing.
-- **P1 Surgical Rollback:** Rollback engine performs targeted link restoration instead of blindly overwriting posts, preserving subsequent editorial updates and articles.
-- **P1 API Alignment:** Fully aligned with official PeeStream API endpoints (`/api/account/info`, `/api/folder/list`, `/api/file/list`).
 - **P1 Hosters:** Cleaned hoster list to strictly confirmed endpoints (MixDrop, Streamtape, VOE, StreamWish, EarnVids, PixelDrain).
-- **P2 Packaging & Full GPLv2:** Added full GNU GPLv2 license file and clean root ZIP archive structure without `upload/` prefix.
+- **P2 Packaging & Full GPLv2:** Added full GNU GPLv2 license file and clean root ZIP archive structure without `upload/` prefix. Tested on DLE 13.0 through 17.3+ and PHP 7.4 through 8.3.
 
 ---
 

@@ -47,12 +47,9 @@ $cfg = array_merge( array(
 	'moderate_new_posts' => '1',
 ), $peestream_config );
 
-// Ensure webhook secret is automatically initialized if missing or < 16 chars
-if( empty( $cfg['webhook_secret'] ) || strlen( $cfg['webhook_secret'] ) < 16 ) {
+// In-memory initialization if missing, too short, or matching compromised placeholder
+if( empty( $cfg['webhook_secret'] ) || strlen( $cfg['webhook_secret'] ) < 16 || $cfg['webhook_secret'] === '529c675e950e1f3b3e3d27415b8437d54923b5c21f331241' ) {
 	$cfg['webhook_secret'] = bin2hex( random_bytes( 24 ) );
-	$con_file = "<?PHP\n\n// PeeStream DLE Addon Configuration\n\n\$peestream_config = " . var_export( $cfg, true ) . ";\n\n?>";
-	@file_put_contents( $conf_file, $con_file, LOCK_EX );
-	@chmod( $conf_file, 0644 );
 }
 
 // Helper function for secure outbound cURL requests to PeeStream Cloud API
@@ -93,6 +90,30 @@ function peestream_api_call( $endpoint, $api_key, $api_domain, $params = array()
 	return array( 'success' => true, 'data' => isset( $data['result'] ) ? $data['result'] : $data );
 }
 
+// Parse PeeStream /api/file/info response correctly
+// PeeStream API returns result as an array of objects: [ { "filecode": "...", "canplay": 1, ... } ]
+function peestream_extract_file_info( $info_res, $target_filecode = '' ) {
+	if( !is_array( $info_res ) || empty( $info_res['success'] ) || empty( $info_res['data'] ) ) {
+		return false;
+	}
+	$data = $info_res['data'];
+	if( is_array( $data ) && isset( $data[0] ) && is_array( $data[0] ) ) {
+		foreach( $data as $item ) {
+			if( is_array( $item ) ) {
+				$fc = isset( $item['filecode'] ) ? $item['filecode'] : ( isset( $item['file_code'] ) ? $item['file_code'] : '' );
+				if( empty( $target_filecode ) || $fc === $target_filecode ) {
+					return $item;
+				}
+			}
+		}
+		return $data[0];
+	}
+	if( is_array( $data ) && ( isset( $data['canplay'] ) || isset( $data['filecode'] ) || isset( $data['state'] ) ) ) {
+		return $data;
+	}
+	return false;
+}
+
 // Verified competitor video hosters supported by PeeStream engine
 function peestream_get_supported_hosters() {
 	return array(
@@ -120,7 +141,7 @@ function peestream_find_competitors( $text ) {
 	return $found;
 }
 
-// Create backup and queue tables if not exist
+// Canonical Table Initializations and Runtime Migrations
 $backup_table = PREFIX . "_peestream_backups";
 $db->query( "CREATE TABLE IF NOT EXISTS {$backup_table} (
 	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -145,12 +166,69 @@ $db->query( "CREATE TABLE IF NOT EXISTS {$queue_table} (
 	original_xfields MEDIUMTEXT,
 	original_short MEDIUMTEXT,
 	original_full MEDIUMTEXT,
+	status VARCHAR(32) NOT NULL DEFAULT 'pending',
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
-	status VARCHAR(32) NOT NULL DEFAULT 'queued',
+	error_msg VARCHAR(255) NOT NULL DEFAULT '',
 	INDEX idx_post_id (post_id),
 	INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
+
+$audit_table = PREFIX . "_peestream_webhooks";
+$db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
+	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+	file_code VARCHAR(64) NOT NULL,
+	event VARCHAR(32) NOT NULL DEFAULT 'video_ready',
+	post_id INT UNSIGNED NOT NULL DEFAULT 0,
+	ip VARCHAR(45) NOT NULL DEFAULT '',
+	received_at DATETIME NOT NULL,
+	status VARCHAR(32) NOT NULL DEFAULT 'processed',
+	UNIQUE KEY uq_fc_event (file_code, event),
+	INDEX idx_ip_time (ip, received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
+
+// Runtime Migration: Ensure columns in peestream_queue match canonical schema
+$col_query = $db->query( "SHOW COLUMNS FROM {$queue_table}", false );
+if( $col_query ) {
+	$existing_cols = array();
+	while( $col = $db->get_row( $col_query ) ) {
+		$existing_cols[] = $col['Field'];
+	}
+	if( !in_array( 'original_url', $existing_cols, true ) ) {
+		if( in_array( 'url', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `url` `original_url` VARCHAR(500) NOT NULL", false );
+		} else {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_url` VARCHAR(500) NOT NULL AFTER `post_id`", false );
+		}
+	}
+	if( !in_array( 'filecode', $existing_cols, true ) ) {
+		if( in_array( 'file_code', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `file_code` `filecode` VARCHAR(64) NOT NULL DEFAULT ''", false );
+		} else {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `filecode` VARCHAR(64) NOT NULL DEFAULT '' AFTER `original_url`", false );
+		}
+	}
+	if( !in_array( 'state', $existing_cols, true ) ) {
+		$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `state` VARCHAR(32) NOT NULL DEFAULT 'pending' AFTER `filecode`", false );
+	}
+	if( !in_array( 'original_xfields', $existing_cols, true ) ) {
+		$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_xfields` MEDIUMTEXT AFTER `state`", false );
+	}
+	if( !in_array( 'original_short', $existing_cols, true ) ) {
+		$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_short` MEDIUMTEXT AFTER `original_xfields`", false );
+	}
+	if( !in_array( 'original_full', $existing_cols, true ) ) {
+		$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_full` MEDIUMTEXT AFTER `original_short`", false );
+	}
+	if( !in_array( 'error_msg', $existing_cols, true ) ) {
+		$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `error_msg` VARCHAR(255) NOT NULL DEFAULT '' AFTER `updated_at`", false );
+	}
+}
+
+$idx_q = $db->query( "SHOW INDEX FROM {$audit_table} WHERE Key_name = 'uq_fc_event'", false );
+if( !$idx_q || ( method_exists( $db, 'num_rows' ) ? !$db->num_rows( $idx_q ) : false ) ) {
+	$db->query( "ALTER TABLE {$audit_table} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
+}
 
 $action = isset( $_REQUEST['action'] ) ? trim( $_REQUEST['action'] ) : '';
 
@@ -267,9 +345,10 @@ if( $action === 'migrator_process_one' ) {
 		
 		// Poll status from PeeStream API
 		$info_res = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $new_code ) );
-		if( $info_res['success'] && isset( $info_res['data']['canplay'] ) && intval( $info_res['data']['canplay'] ) === 1 ) {
+		$f_info = peestream_extract_file_info( $info_res, $new_code );
+		if( $f_info && isset( $f_info['canplay'] ) && intval( $f_info['canplay'] ) === 1 ) {
 			$is_ready = true;
-		} elseif( $info_res['success'] && isset( $info_res['data']['state'] ) && $info_res['data']['state'] === 'failed' ) {
+		} elseif( $f_info && isset( $f_info['state'] ) && $f_info['state'] === 'failed' ) {
 			$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', updated_at='{$now_date}' WHERE id='{$q_item['id']}'" );
 			// SAFEGUARD: Original link remains 100% untouched!
 			echo json_encode( array(
@@ -278,7 +357,7 @@ if( $action === 'migrator_process_one' ) {
 			) );
 			exit;
 		} else {
-			$cur_state = ( $info_res['success'] && isset( $info_res['data']['state'] ) ) ? $info_res['data']['state'] : 'pending';
+			$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
 			$safe_state = $db->safesql( $cur_state );
 			$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$q_item['id']}'" );
 			// SAFEGUARD: Original link remains 100% untouched!
@@ -319,10 +398,11 @@ if( $action === 'migrator_process_one' ) {
 		
 		// Immediately query file status (in case file is instantly available/cached)
 		$info_res = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $new_code ) );
-		if( $info_res['success'] && isset( $info_res['data']['canplay'] ) && intval( $info_res['data']['canplay'] ) === 1 ) {
+		$f_info = peestream_extract_file_info( $info_res, $new_code );
+		if( $f_info && isset( $f_info['canplay'] ) && intval( $f_info['canplay'] ) === 1 ) {
 			$is_ready = true;
 		} else {
-			$cur_state = ( $info_res['success'] && isset( $info_res['data']['state'] ) ) ? $info_res['data']['state'] : 'pending';
+			$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
 			// SAFEGUARD: Original link remains 100% untouched until video is ready!
 			echo json_encode( array(
 				'success' => true,
@@ -417,7 +497,8 @@ if( $action === 'migrator_check_queue' ) {
 		$old_url = $item['original_url'];
 
 		$info = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $fc ) );
-		if( $info['success'] && isset( $info['data']['canplay'] ) && intval( $info['data']['canplay'] ) === 1 ) {
+		$f_info = peestream_extract_file_info( $info, $fc );
+		if( $f_info && isset( $f_info['canplay'] ) && intval( $f_info['canplay'] ) === 1 ) {
 			// Ready! Apply update
 			$post = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'" );
 			if( !empty( $post['id'] ) ) {
@@ -456,7 +537,7 @@ if( $action === 'migrator_check_queue' ) {
 				$ready_count++;
 				$logs[] = "[READY] Post #" . $pid . ": Transcoding complete (canplay=1)! PeeStream player attached.";
 			}
-		} elseif( $info['success'] && isset( $info['data']['state'] ) && $info['data']['state'] === 'failed' ) {
+		} elseif( $f_info && isset( $f_info['state'] ) && $f_info['state'] === 'failed' ) {
 			$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
 			$logs[] = "[FAILED] Post #" . $pid . ": Remote transcode failed on PeeStream. Original link preserved.";
 		}
@@ -502,20 +583,32 @@ if( $action === 'migrator_rollback' ) {
 		$embed_url = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $new_code;
 
 		// Check if current post still contains this PeeStream replacement
-		$has_peestream = ( strpos( $curr['xfields'], $new_code ) !== false || strpos( $curr['short_story'], $new_code ) !== false || strpos( $curr['full_story'], $new_code ) !== false || strpos( $curr['short_story'], $embed_url ) !== false || strpos( $curr['full_story'], $embed_url ) !== false );
+		$has_peestream_embed = ( strpos( $curr['short_story'], $embed_url ) !== false || strpos( $curr['full_story'], $embed_url ) !== false );
+		$has_peestream_xf    = false;
+		if( function_exists( 'xfieldsdataload' ) ) {
+			$xf_arr = xfieldsdataload( $curr['xfields'] );
+			if( isset( $xf_arr[$xf_name] ) && $xf_arr[$xf_name] === $new_code ) {
+				$has_peestream_xf = true;
+			}
+		} else {
+			$has_peestream_xf = ( strpos( $curr['xfields'], $xf_name . '|' . $new_code ) !== false );
+		}
 
-		if( $has_peestream ) {
-			// SURGICAL REVERSION: Revert only the PeeStream replacement to preserve any newer editorial text
-			$upd_short = str_replace( array( $embed_url, $new_code ), $orig_url, $curr['short_story'] );
-			$upd_full  = str_replace( array( $embed_url, $new_code ), $orig_url, $curr['full_story'] );
-			$upd_xf    = str_replace( $new_code, $orig_url, $curr['xfields'] );
+		if( $has_peestream_embed || $has_peestream_xf ) {
+			// SURGICAL REVERSION: Revert exclusively the PeeStream embed URL and specific xfield
+			// Never replace raw $new_code across the entire post (prevents corrupting other text)
+			$upd_short = str_replace( $embed_url, $orig_url, $curr['short_story'] );
+			$upd_full  = str_replace( $embed_url, $orig_url, $curr['full_story'] );
+			$upd_xf    = $curr['xfields'];
 
 			if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
 				$xf_arr = xfieldsdataload( $upd_xf );
-				if( isset( $xf_arr[$xf_name] ) && ( $xf_arr[$xf_name] === $new_code || $xf_arr[$xf_name] === $orig_url ) ) {
+				if( isset( $xf_arr[$xf_name] ) && $xf_arr[$xf_name] === $new_code ) {
 					$xf_arr[$xf_name] = $orig_url;
 					$upd_xf = xfieldsdatasave( $xf_arr );
 				}
+			} else {
+				$upd_xf = str_replace( $xf_name . '|' . $new_code, $xf_name . '|' . $orig_url, $upd_xf );
 			}
 
 			$safe_xf = $db->safesql( $upd_xf );
@@ -990,14 +1083,12 @@ function pstToggleSecret(id) {
 }
 
 function pstGenerateSecret() {
-	var arr = new Uint8Array(24);
-	if (window.crypto && window.crypto.getRandomValues) {
-		window.crypto.getRandomValues(arr);
-	} else {
-		for (var i = 0; i < 24; i++) {
-			arr[i] = Math.floor(Math.random() * 256);
-		}
+	if (!window.crypto || !window.crypto.getRandomValues) {
+		alert("Cryptographically secure random number generator (window.crypto) is not available in your browser. Please use a modern browser over HTTPS.");
+		return;
 	}
+	var arr = new Uint8Array(24);
+	window.crypto.getRandomValues(arr);
 	var res = Array.from(arr, function(b) { return ('0' + b.toString(16)).slice(-2); }).join('');
 	var el = document.getElementById("pst_wh_secret");
 	if (el) {
