@@ -47,6 +47,14 @@ $cfg = array_merge( array(
 	'moderate_new_posts' => '1',
 ), $peestream_config );
 
+// Ensure webhook secret is automatically initialized if missing or < 16 chars
+if( empty( $cfg['webhook_secret'] ) || strlen( $cfg['webhook_secret'] ) < 16 ) {
+	$cfg['webhook_secret'] = bin2hex( random_bytes( 24 ) );
+	$con_file = "<?PHP\n\n// PeeStream DLE Addon Configuration\n\n\$peestream_config = " . var_export( $cfg, true ) . ";\n\n?>";
+	@file_put_contents( $conf_file, $con_file, LOCK_EX );
+	@chmod( $conf_file, 0644 );
+}
+
 // Helper function for secure outbound cURL requests to PeeStream Cloud API
 function peestream_api_call( $endpoint, $api_key, $api_domain, $params = array() ) {
 	if( empty( $api_key ) ) {
@@ -112,7 +120,7 @@ function peestream_find_competitors( $text ) {
 	return $found;
 }
 
-// Create backup table if not exists
+// Create backup and queue tables if not exist
 $backup_table = PREFIX . "_peestream_backups";
 $db->query( "CREATE TABLE IF NOT EXISTS {$backup_table} (
 	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -125,6 +133,23 @@ $db->query( "CREATE TABLE IF NOT EXISTS {$backup_table} (
 	backup_time DATETIME NOT NULL,
 	status VARCHAR(32) NOT NULL DEFAULT 'completed',
 	INDEX idx_post_id (post_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
+
+$queue_table = PREFIX . "_peestream_queue";
+$db->query( "CREATE TABLE IF NOT EXISTS {$queue_table} (
+	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+	post_id INT UNSIGNED NOT NULL,
+	original_url VARCHAR(500) NOT NULL,
+	filecode VARCHAR(64) NOT NULL DEFAULT '',
+	state VARCHAR(32) NOT NULL DEFAULT 'pending',
+	original_xfields MEDIUMTEXT,
+	original_short MEDIUMTEXT,
+	original_full MEDIUMTEXT,
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL,
+	status VARCHAR(32) NOT NULL DEFAULT 'queued',
+	INDEX idx_post_id (post_id),
+	INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
 
 $action = isset( $_REQUEST['action'] ) ? trim( $_REQUEST['action'] ) : '';
@@ -181,7 +206,7 @@ if( $action === 'migrator_scan' ) {
 }
 
 // -------------------------------------------------------------
-// AJAX: Migrate single post with backup & verification
+// AJAX: Migrate single post with persistent queue & canplay=1 verification
 // -------------------------------------------------------------
 if( $action === 'migrator_process_one' ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
@@ -218,80 +243,240 @@ if( $action === 'migrator_process_one' ) {
 		exit;
 	}
 	
-	// 1. Call PeeStream Remote API to queue download and transcode
-	$res = peestream_api_call( 'api/upload/url', $cfg['api_key'], $cfg['api_domain'], array(
-		'url' => $old_url,
-		'new_title' => $row['title'],
-		'fld_id' => intval( $cfg['default_folder_id'] )
-	) );
-	
-	if( !$res['success'] || empty( $res['data']['filecode'] ) ) {
-		$err = isset( $res['error'] ) ? $res['error'] : 'PeeStream API failed to queue video from competitor host.';
-		// SAFEGUARD: Original link remains 100% untouched!
-		echo json_encode( array( 'success' => false, 'error' => $err ) );
-		exit;
-	}
-	
-	$new_code = preg_replace( '/[^a-zA-Z0-9_\-]/', '', (string)$res['data']['filecode'] );
-	$new_embed = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $new_code;
-	
-	// 2. Perform Pre-Migration Backup of Original Post Content
-	$safe_orig_xf = $db->safesql( $row['xfields'] );
-	$safe_orig_short = $db->safesql( $row['short_story'] );
-	$safe_orig_full = $db->safesql( $row['full_story'] );
 	$safe_old_url = $db->safesql( $old_url );
-	$safe_new_code = $db->safesql( $new_code );
 	$now_date = date( 'Y-m-d H:i:s' );
 	
-	$db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
-				VALUES ('{$post_id}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_new_code}', '{$now_date}', 'completed')" );
-	$backup_id = intval( $db->insert_id() );
+	// Check if already in persistent queue
+	$q_item = $db->super_query( "SELECT * FROM {$queue_table} WHERE post_id='{$post_id}' AND original_url='{$safe_old_url}' LIMIT 1" );
 	
-	// 3. Precise Surgical Replacement (Does NOT damage other links in multi-link articles)
-	$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
-	$upd_xf = $row['xfields'];
-	$upd_short = $row['short_story'];
-	$upd_full = $row['full_story'];
+	$new_code = '';
+	$is_ready = false;
 	
-	if( strpos( $upd_xf, $old_url ) !== false ) {
-		$upd_xf = str_replace( $old_url, $new_code, $upd_xf );
+	if( !empty( $q_item['id'] ) ) {
+		$new_code = $q_item['filecode'];
+		if( $q_item['status'] === 'completed' ) {
+			echo json_encode( array(
+				'success' => true,
+				'already_completed' => true,
+				'post_id' => $post_id,
+				'filecode' => $new_code,
+				'msg' => '[SKIP] Post #' . $post_id . ' already converted to PeeStream (' . $new_code . ').'
+			) );
+			exit;
+		}
+		
+		// Poll status from PeeStream API
+		$info_res = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $new_code ) );
+		if( $info_res['success'] && isset( $info_res['data']['canplay'] ) && intval( $info_res['data']['canplay'] ) === 1 ) {
+			$is_ready = true;
+		} elseif( $info_res['success'] && isset( $info_res['data']['state'] ) && $info_res['data']['state'] === 'failed' ) {
+			$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', updated_at='{$now_date}' WHERE id='{$q_item['id']}'" );
+			// SAFEGUARD: Original link remains 100% untouched!
+			echo json_encode( array(
+				'success' => false,
+				'error' => '[FAILED] Post #' . $post_id . ': PeeStream transcoding failed. Original link preserved.'
+			) );
+			exit;
+		} else {
+			$cur_state = ( $info_res['success'] && isset( $info_res['data']['state'] ) ) ? $info_res['data']['state'] : 'pending';
+			$safe_state = $db->safesql( $cur_state );
+			$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$q_item['id']}'" );
+			// SAFEGUARD: Original link remains 100% untouched!
+			echo json_encode( array(
+				'success' => true,
+				'pending' => true,
+				'post_id' => $post_id,
+				'filecode' => $new_code,
+				'msg' => '[PROCESSING] Post #' . $post_id . ': Video is still encoding (' . $cur_state . '). Original link untouched.'
+			) );
+			exit;
+		}
+	} else {
+		// Step 1: Call PeeStream Remote API to queue download and transcode
+		$res = peestream_api_call( 'api/upload/url', $cfg['api_key'], $cfg['api_domain'], array(
+			'url' => $old_url,
+			'new_title' => $row['title'],
+			'fld_id' => intval( $cfg['default_folder_id'] )
+		) );
+		
+		if( !$res['success'] || empty( $res['data']['filecode'] ) ) {
+			$err = isset( $res['error'] ) ? $res['error'] : 'PeeStream API failed to queue video from competitor host.';
+			// SAFEGUARD: Original link remains 100% untouched!
+			echo json_encode( array( 'success' => false, 'error' => $err ) );
+			exit;
+		}
+		
+		$new_code = preg_replace( '/[^a-zA-Z0-9_\-]/', '', (string)$res['data']['filecode'] );
+		$safe_new_code = $db->safesql( $new_code );
+		$safe_orig_xf = $db->safesql( $row['xfields'] );
+		$safe_orig_short = $db->safesql( $row['short_story'] );
+		$safe_orig_full = $db->safesql( $row['full_story'] );
+		
+		// Insert into persistent queue
+		$db->query( "INSERT INTO {$queue_table} (post_id, original_url, filecode, state, original_xfields, original_short, original_full, created_at, updated_at, status)
+					VALUES ('{$post_id}', '{$safe_old_url}', '{$safe_new_code}', 'pending', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$now_date}', '{$now_date}', 'pending')" );
+		$queue_id = intval( $db->insert_id() );
+		
+		// Immediately query file status (in case file is instantly available/cached)
+		$info_res = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $new_code ) );
+		if( $info_res['success'] && isset( $info_res['data']['canplay'] ) && intval( $info_res['data']['canplay'] ) === 1 ) {
+			$is_ready = true;
+		} else {
+			$cur_state = ( $info_res['success'] && isset( $info_res['data']['state'] ) ) ? $info_res['data']['state'] : 'pending';
+			// SAFEGUARD: Original link remains 100% untouched until video is ready!
+			echo json_encode( array(
+				'success' => true,
+				'pending' => true,
+				'post_id' => $post_id,
+				'filecode' => $new_code,
+				'msg' => '[QUEUED] Post #' . $post_id . ': Queued on PeeStream (' . $cur_state . '). Original link preserved until ready.'
+			) );
+			exit;
+		}
 	}
 	
-	if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
-		$xf_arr = xfieldsdataload( $upd_xf );
-		$xf_arr[$xf_name] = $new_code;
-		$upd_xf = xfieldsdatasave( $xf_arr );
+	// Step 2: Apply replacement ONLY when canplay === 1
+	if( $is_ready ) {
+		$new_embed = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $new_code;
+		$safe_orig_xf = $db->safesql( $row['xfields'] );
+		$safe_orig_short = $db->safesql( $row['short_story'] );
+		$safe_orig_full = $db->safesql( $row['full_story'] );
+		$safe_new_code = $db->safesql( $new_code );
+		
+		// Pre-Migration Backup of Original Post Content
+		$db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
+					VALUES ('{$post_id}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_new_code}', '{$now_date}', 'completed')" );
+		$backup_id = intval( $db->insert_id() );
+		
+		// Precise Surgical Replacement
+		$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
+		$upd_xf = $row['xfields'];
+		$upd_short = $row['short_story'];
+		$upd_full = $row['full_story'];
+		
+		if( strpos( $upd_xf, $old_url ) !== false ) {
+			$upd_xf = str_replace( $old_url, $new_code, $upd_xf );
+		}
+		
+		if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
+			$xf_arr = xfieldsdataload( $upd_xf );
+			$xf_arr[$xf_name] = $new_code;
+			$upd_xf = xfieldsdatasave( $xf_arr );
+		}
+		
+		if( strpos( $upd_full, $old_url ) !== false ) {
+			$upd_full = str_replace( $old_url, $new_embed, $upd_full );
+		}
+		if( strpos( $upd_short, $old_url ) !== false ) {
+			$upd_short = str_replace( $old_url, $new_embed, $upd_short );
+		}
+		
+		$safe_xf = $db->safesql( $upd_xf );
+		$safe_short = $db->safesql( $upd_short );
+		$safe_full = $db->safesql( $upd_full );
+		
+		$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$post_id}'" );
+		$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', updated_at='{$now_date}' WHERE post_id='{$post_id}' AND original_url='{$safe_old_url}'" );
+		
+		if( function_exists( 'clear_cache' ) ) {
+			clear_cache( array( 'news_' ) );
+		}
+		
+		echo json_encode( array(
+			'success' => true,
+			'post_id' => $post_id,
+			'backup_id' => $backup_id,
+			'filecode' => $new_code,
+			'msg' => '[READY] Video is ready (canplay=1)! Backed up and replaced with PeeStream code: ' . $new_code
+		) );
+		exit;
 	}
-	
-	if( strpos( $upd_full, $old_url ) !== false ) {
-		$upd_full = str_replace( $old_url, $new_embed, $upd_full );
+}
+
+// -------------------------------------------------------------
+// AJAX: Check status of pending queue encodings
+// -------------------------------------------------------------
+if( $action === 'migrator_check_queue' ) {
+	header( 'Content-Type: application/json; charset=utf-8' );
+	if( empty( $_REQUEST['user_hash'] ) || !hash_equals( (string)$dle_login_hash, (string)$_REQUEST['user_hash'] ) ) {
+		echo json_encode( array( 'success' => false, 'error' => 'Invalid security token.' ) );
+		exit;
 	}
-	if( strpos( $upd_short, $old_url ) !== false ) {
-		$upd_short = str_replace( $old_url, $new_embed, $upd_short );
+
+	$q_res = $db->query( "SELECT * FROM {$queue_table} WHERE status IN ('pending', 'queued') ORDER BY id ASC LIMIT 25" );
+	$now_date = date( 'Y-m-d H:i:s' );
+	$ready_count = 0;
+	$checked_count = 0;
+	$logs = array();
+	$table = PREFIX . "_post";
+
+	while( $item = $db->get_row( $q_res ) ) {
+		$checked_count++;
+		$pid = intval( $item['post_id'] );
+		$fc = $item['filecode'];
+		$old_url = $item['original_url'];
+
+		$info = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $fc ) );
+		if( $info['success'] && isset( $info['data']['canplay'] ) && intval( $info['data']['canplay'] ) === 1 ) {
+			// Ready! Apply update
+			$post = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'" );
+			if( !empty( $post['id'] ) ) {
+				$embed_url = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $fc;
+				$safe_orig_xf = $db->safesql( $post['xfields'] );
+				$safe_orig_short = $db->safesql( $post['short_story'] );
+				$safe_orig_full = $db->safesql( $post['full_story'] );
+				$safe_old_url = $db->safesql( $old_url );
+				$safe_fc = $db->safesql( $fc );
+
+				// Backup
+				$db->query( "INSERT INTO {$backup_table} (post_id, original_xfields, original_short, original_full, migrated_url, new_code, backup_time, status)
+							 VALUES ('{$pid}', '{$safe_orig_xf}', '{$safe_orig_short}', '{$safe_orig_full}', '{$safe_old_url}', '{$safe_fc}', '{$now_date}', 'completed')" );
+
+				// Replace
+				$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
+				$upd_xf = $post['xfields'];
+				$upd_short = $post['short_story'];
+				$upd_full = $post['full_story'];
+
+				if( strpos( $upd_xf, $old_url ) !== false ) $upd_xf = str_replace( $old_url, $fc, $upd_xf );
+				if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
+					$xf_arr = xfieldsdataload( $upd_xf );
+					$xf_arr[$xf_name] = $fc;
+					$upd_xf = xfieldsdatasave( $xf_arr );
+				}
+				if( strpos( $upd_full, $old_url ) !== false ) $upd_full = str_replace( $old_url, $embed_url, $upd_full );
+				if( strpos( $upd_short, $old_url ) !== false ) $upd_short = str_replace( $old_url, $embed_url, $upd_short );
+
+				$safe_xf = $db->safesql( $upd_xf );
+				$safe_short = $db->safesql( $upd_short );
+				$safe_full = $db->safesql( $upd_full );
+
+				$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'" );
+				$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+				$ready_count++;
+				$logs[] = "[READY] Post #" . $pid . ": Transcoding complete (canplay=1)! PeeStream player attached.";
+			}
+		} elseif( $info['success'] && isset( $info['data']['state'] ) && $info['data']['state'] === 'failed' ) {
+			$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+			$logs[] = "[FAILED] Post #" . $pid . ": Remote transcode failed on PeeStream. Original link preserved.";
+		}
 	}
-	
-	$safe_xf = $db->safesql( $upd_xf );
-	$safe_short = $db->safesql( $upd_short );
-	$safe_full = $db->safesql( $upd_full );
-	
-	$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$post_id}'" );
-	
-	if( function_exists( 'clear_cache' ) ) {
+
+	if( $ready_count > 0 && function_exists( 'clear_cache' ) ) {
 		clear_cache( array( 'news_' ) );
 	}
-	
+
 	echo json_encode( array(
 		'success' => true,
-		'post_id' => $post_id,
-		'backup_id' => $backup_id,
-		'filecode' => $new_code,
-		'msg' => 'Backed up and replaced with PeeStream code: ' . $new_code
+		'checked_count' => $checked_count,
+		'ready_count' => $ready_count,
+		'logs' => $logs
 	) );
 	exit;
 }
 
 // -------------------------------------------------------------
-// AJAX: Rollback Migration from Backup
+// AJAX: Surgical Rollback Migration from Backup
 // -------------------------------------------------------------
 if( $action === 'migrator_rollback' ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
@@ -302,35 +487,67 @@ if( $action === 'migrator_rollback' ) {
 	
 	$post_id = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
 	$table = PREFIX . "_post";
-	
-	if( $post_id > 0 ) {
-		$b = $db->super_query( "SELECT * FROM {$backup_table} WHERE post_id='{$post_id}' ORDER BY id DESC LIMIT 1" );
-		if( !empty( $b['id'] ) ) {
-			$safe_xf = $db->safesql( $b['original_xfields'] );
-			$safe_short = $db->safesql( $b['original_short'] );
-			$safe_full = $db->safesql( $b['original_full'] );
-			$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$post_id}'" );
+	$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
+
+	$rollback_single = function( $b ) use ( $db, $table, $cfg, $xf_name, $backup_table ) {
+		$pid = intval( $b['post_id'] );
+		$curr = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'" );
+		if( empty( $curr['id'] ) ) {
 			$db->query( "UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'" );
+			return false;
+		}
+
+		$new_code = trim( (string)$b['new_code'] );
+		$orig_url = trim( (string)$b['migrated_url'] );
+		$embed_url = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $new_code;
+
+		// Check if current post still contains this PeeStream replacement
+		$has_peestream = ( strpos( $curr['xfields'], $new_code ) !== false || strpos( $curr['short_story'], $new_code ) !== false || strpos( $curr['full_story'], $new_code ) !== false || strpos( $curr['short_story'], $embed_url ) !== false || strpos( $curr['full_story'], $embed_url ) !== false );
+
+		if( $has_peestream ) {
+			// SURGICAL REVERSION: Revert only the PeeStream replacement to preserve any newer editorial text
+			$upd_short = str_replace( array( $embed_url, $new_code ), $orig_url, $curr['short_story'] );
+			$upd_full  = str_replace( array( $embed_url, $new_code ), $orig_url, $curr['full_story'] );
+			$upd_xf    = str_replace( $new_code, $orig_url, $curr['xfields'] );
+
+			if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
+				$xf_arr = xfieldsdataload( $upd_xf );
+				if( isset( $xf_arr[$xf_name] ) && ( $xf_arr[$xf_name] === $new_code || $xf_arr[$xf_name] === $orig_url ) ) {
+					$xf_arr[$xf_name] = $orig_url;
+					$upd_xf = xfieldsdatasave( $xf_arr );
+				}
+			}
+
+			$safe_xf = $db->safesql( $upd_xf );
+			$safe_short = $db->safesql( $upd_short );
+			$safe_full = $db->safesql( $upd_full );
+
+			$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'" );
+		}
+		$db->query( "UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'" );
+		return true;
+	};
+
+	if( $post_id > 0 ) {
+		$b = $db->super_query( "SELECT * FROM {$backup_table} WHERE post_id='{$post_id}' AND status='completed' ORDER BY id DESC LIMIT 1" );
+		if( !empty( $b['id'] ) ) {
+			$rollback_single( $b );
 			if( function_exists( 'clear_cache' ) ) clear_cache( array( 'news_' ) );
-			echo json_encode( array( 'success' => true, 'msg' => 'Post #' . $post_id . ' has been restored from backup.' ) );
+			echo json_encode( array( 'success' => true, 'msg' => 'Post #' . $post_id . ' surgically reverted to original video link. Newer editorial text preserved.' ) );
 		} else {
-			echo json_encode( array( 'success' => false, 'error' => 'No backup found for post #' . $post_id ) );
+			echo json_encode( array( 'success' => false, 'error' => 'No active backup found for post #' . $post_id ) );
 		}
 	} else {
 		// Rollback all
 		$all_b = $db->query( "SELECT * FROM {$backup_table} WHERE status='completed' ORDER BY id DESC" );
 		$count = 0;
 		while( $b = $db->get_row( $all_b ) ) {
-			$pid = intval( $b['post_id'] );
-			$safe_xf = $db->safesql( $b['original_xfields'] );
-			$safe_short = $db->safesql( $b['original_short'] );
-			$safe_full = $db->safesql( $b['original_full'] );
-			$db->query( "UPDATE {$table} SET xfields='{$safe_xf}', short_story='{$safe_short}', full_story='{$safe_full}' WHERE id='{$pid}'" );
-			$db->query( "UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'" );
-			$count++;
+			if( $rollback_single( $b ) ) {
+				$count++;
+			}
 		}
 		if( function_exists( 'clear_cache' ) ) clear_cache( array( 'news_' ) );
-		echo json_encode( array( 'success' => true, 'count' => $count, 'msg' => 'Successfully restored ' . $count . ' articles from backup.' ) );
+		echo json_encode( array( 'success' => true, 'count' => $count, 'msg' => 'Successfully restored ' . $count . ' articles. Editorial changes preserved.' ) );
 	}
 	exit;
 }
@@ -606,7 +823,7 @@ echo <<<HTML
 					</div>
 				</div>
 
-				<div style="display:flex;gap:15px;align-items:center;margin-bottom:20px;">
+				<div style="display:flex;gap:15px;align-items:center;flex-wrap:wrap;margin-bottom:20px;">
 					<button type="button" id="btn_migrator_scan" class="btn btn-info" onclick="mgrStartScan()">
 						<i class="fa fa-search position-left"></i> Scan Database for Candidate Links
 					</button>
@@ -615,6 +832,9 @@ echo <<<HTML
 					</button>
 					<button type="button" id="btn_migrator_pause" class="btn btn-warning" style="display:none;" onclick="mgrPauseBatch()">
 						<i class="fa fa-pause position-left"></i> Pause
+					</button>
+					<button type="button" id="btn_migrator_check_queue" class="btn btn-default" onclick="mgrCheckPendingQueue()">
+						<i class="fa fa-refresh position-left"></i> Check Pending Encodings
 					</button>
 				</div>
 
@@ -770,36 +990,56 @@ function pstToggleSecret(id) {
 }
 
 function pstGenerateSecret() {
-	var chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-	var res = "";
-	for (var i = 0; i < 32; i++) {
-		res += chars.charAt(Math.floor(Math.random() * chars.length));
+	var arr = new Uint8Array(24);
+	if (window.crypto && window.crypto.getRandomValues) {
+		window.crypto.getRandomValues(arr);
+	} else {
+		for (var i = 0; i < 24; i++) {
+			arr[i] = Math.floor(Math.random() * 256);
+		}
 	}
-	document.getElementById("pst_wh_secret").value = res;
+	var res = Array.from(arr, function(b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+	var el = document.getElementById("pst_wh_secret");
+	if (el) {
+		el.value = res;
+	}
 }
 
 function mgrLog(msg, color) {
 	var box = document.getElementById("mgr_log_box");
+	if (!box) return;
 	var d = document.createElement("div");
 	d.style.color = color || "#f8fafc";
 	d.style.marginBottom = "3px";
-	var timeStr = new Date().toLocaleTimeString();
-	d.innerHTML = "<span style='color:#64748b;'>[" + timeStr + "]</span> " + msg;
+	var timeSpan = document.createElement("span");
+	timeSpan.style.color = "#64748b";
+	timeSpan.textContent = "[" + new Date().toLocaleTimeString() + "] ";
+	d.appendChild(timeSpan);
+	d.appendChild(document.createTextNode(String(msg)));
 	box.appendChild(d);
 	box.scrollTop = box.scrollHeight;
+}
+
+function pstSetBtn(btn, iconClass, text) {
+	if (!btn) return;
+	btn.textContent = "";
+	var i = document.createElement("i");
+	i.className = iconClass + " position-left";
+	btn.appendChild(i);
+	btn.appendChild(document.createTextNode(" " + text));
 }
 
 function mgrStartScan() {
 	var btn = document.getElementById("btn_migrator_scan");
 	btn.disabled = true;
-	btn.innerHTML = "<i class='fa fa-spinner fa-spin position-left'></i> Scanning Database...";
+	pstSetBtn(btn, "fa fa-spinner fa-spin", "Scanning Database...");
 	mgrLog("Starting database analysis for verified competitor links...", "#38bdf8");
 	
 	fetch("?mod=peestream&action=migrator_scan&user_hash=" + DLE_HASH)
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-search position-left'></i> Scan Again";
+			pstSetBtn(btn, "fa fa-search", "Scan Again");
 			if(data.success) {
 				mgrQueue = data.items || [];
 				mgrTotal = mgrQueue.length;
@@ -813,7 +1053,7 @@ function mgrStartScan() {
 				document.getElementById("mgr_stats_row").style.display = "flex";
 				
 				if(mgrTotal > 0) {
-					mgrLog("Scan completed! Found <b>" + mgrTotal + "</b> articles with verified competitor hoster links.", "#4ade80");
+					mgrLog("Scan completed! Found " + mgrTotal + " articles with verified competitor hoster links.", "#4ade80");
 					document.getElementById("btn_migrator_start").style.display = "inline-block";
 				} else {
 					mgrLog("No competitor links found in your database. All videos are clean!", "#a3e635");
@@ -824,8 +1064,41 @@ function mgrStartScan() {
 		})
 		.catch(function(err) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-search position-left'></i> Scan Again";
+			pstSetBtn(btn, "fa fa-search", "Scan Again");
 			mgrLog("Network error: " + err, "#f87171");
+		});
+}
+
+function mgrCheckPendingQueue() {
+	var btn = document.getElementById("btn_migrator_check_queue");
+	if (btn) {
+		btn.disabled = true;
+		pstSetBtn(btn, "fa fa-spinner fa-spin", "Checking Queue...");
+	}
+	mgrLog("Checking transcode status of pending queue items in PeeStream API...", "#38bdf8");
+	var fd = new FormData();
+	fd.append("action", "migrator_check_queue");
+	fd.append("user_hash", DLE_HASH);
+
+	fetch("?mod=peestream", { method: "POST", body: fd })
+		.then(function(r) { return r.json(); })
+		.then(function(data) {
+			if (btn) {
+				btn.disabled = false;
+				pstSetBtn(btn, "fa fa-refresh", "Check Pending Encodings");
+			}
+			if (data.success) {
+				mgrLog(data.msg + " (Pending: " + data.pending + ", Ready: " + data.ready + ", Errors: " + data.errors + ")", "#4ade80");
+			} else {
+				mgrLog("Queue check failed: " + (data.error || "Unknown error"), "#f87171");
+			}
+		})
+		.catch(function(err) {
+			if (btn) {
+				btn.disabled = false;
+				pstSetBtn(btn, "fa fa-refresh", "Check Pending Encodings");
+			}
+			mgrLog("Network error checking queue: " + err, "#f87171");
 		});
 }
 

@@ -93,6 +93,8 @@ if ( ! empty( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ) {
 }
 $client_ip = substr( preg_replace( '/[^0-9a-fA-F:.]/', '', $client_ip ), 0, 45 );
 
+// 6. Rate Limiting & Replay Protection Table
+
 $audit_table = PREFIX . "_peestream_webhooks";
 $db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
 	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -102,7 +104,7 @@ $db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
 	ip VARCHAR(45) NOT NULL DEFAULT '',
 	received_at DATETIME NOT NULL,
 	status VARCHAR(32) NOT NULL DEFAULT 'processed',
-	INDEX idx_fc_event (file_code, event),
+	UNIQUE KEY uq_fc_event (file_code, event),
 	INDEX idx_ip_time (ip, received_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
 
@@ -144,7 +146,15 @@ if ( empty( $file_code ) || ! preg_match( '/^[a-zA-Z0-9_\-]+$/', $file_code ) ||
 	exit;
 }
 
+// Validate Allowed Event Types
+$allowed_events = array( 'video_ready', 'new_episode_ready', 'movie_ready' );
 $event = isset( $data['event'] ) ? substr( trim( (string)$data['event'] ), 0, 32 ) : 'video_ready';
+if ( ! in_array( $event, $allowed_events, true ) ) {
+	http_response_code( 400 );
+	echo json_encode( array( 'success' => false, 'error' => sprintf( 'Unsupported event: %s', htmlspecialchars( $event, ENT_QUOTES, 'UTF-8' ) ) ) );
+	exit;
+}
+
 $imdb_id = isset( $data['imdb_id'] ) ? trim( (string)$data['imdb_id'] ) : ( isset( $data['imdb'] ) ? trim( (string)$data['imdb'] ) : '' );
 if ( ! empty( $imdb_id ) && ! preg_match( '/^tt\d{5,12}$/i', $imdb_id ) ) {
 	$imdb_id = ''; // Discard invalid IMDb formats
@@ -163,7 +173,7 @@ if ( ! empty( $data['poster'] ) && preg_match( '#^https?://#i', $data['poster'] 
 // 8. Replay Protection: Check if this file_code & event was already processed
 $safe_fc = $db->safesql( $file_code );
 $safe_event = $db->safesql( $event );
-$replay_check = $db->super_query( "SELECT id, post_id FROM {$audit_table} WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}' AND status = 'processed' LIMIT 1" );
+$replay_check = $db->super_query( "SELECT id, post_id FROM {$audit_table} WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}' LIMIT 1" );
 if ( $replay_check && intval( $replay_check['id'] ) > 0 ) {
 	echo json_encode( array(
 		'success'   => true,
@@ -179,12 +189,54 @@ $now_date = date( 'Y-m-d H:i:s' );
 $xf_name = ! empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
 $table = PREFIX . '_post';
 
-// 9. Match News Item via Strict IMDb ID ONLY (Never loose LIKE '%title%')
+// 9. Match News Item via Strict IMDb ID ONLY (Unpack xfields, reject ambiguous matches)
 $matched_post = null;
 if ( ! empty( $imdb_id ) ) {
 	$safe_imdb = $db->safesql( $imdb_id );
-	// Look for exact IMDb ID match inside xfields
-	$matched_post = $db->super_query( "SELECT id, title, xfields, short_story, full_story, category FROM {$table} WHERE xfields LIKE '%{$safe_imdb}%' ORDER BY id DESC LIMIT 1" );
+	// Look for candidate posts containing the string in xfields
+	$cand_query = $db->query( "SELECT id, title, xfields, short_story, full_story, category FROM {$table} WHERE xfields LIKE '%{$safe_imdb}%' ORDER BY id DESC LIMIT 25" );
+	
+	$strictly_matched_posts = array();
+	while( $cand_row = $db->get_row( $cand_query ) ) {
+		$xf_arr = function_exists( 'xfieldsdataload' ) ? xfieldsdataload( $cand_row['xfields'] ) : array();
+		$found_exact = false;
+		
+		if ( ! empty( $xf_arr ) && is_array( $xf_arr ) ) {
+			foreach ( $xf_arr as $xf_k => $xf_v ) {
+				if ( strcasecmp( trim( (string)$xf_v ), $imdb_id ) === 0 ) {
+					$found_exact = true;
+					break;
+				}
+			}
+		} else {
+			// Manual parser fallback
+			$parts = explode( '||', (string)$cand_row['xfields'] );
+			foreach ( $parts as $p ) {
+				$pair = explode( '|', $p );
+				if ( isset( $pair[1] ) && strcasecmp( trim( $pair[1] ), $imdb_id ) === 0 ) {
+					$found_exact = true;
+					break;
+				}
+			}
+		}
+		
+		if ( $found_exact ) {
+			$strictly_matched_posts[] = $cand_row;
+		}
+	}
+	
+	if ( count( $strictly_matched_posts ) === 1 ) {
+		$matched_post = $strictly_matched_posts[0];
+	} elseif ( count( $strictly_matched_posts ) > 1 ) {
+		// Ambiguous match: multiple posts share this IMDb ID. Do NOT update randomly!
+		http_response_code( 409 );
+		echo json_encode( array(
+			'success' => false,
+			'error'   => sprintf( 'Ambiguous match: %d posts matched IMDb ID %s. Manual review required.', count( $strictly_matched_posts ), htmlspecialchars( $imdb_id, ENT_QUOTES, 'UTF-8' ) ),
+			'action'  => 'ambiguous_match_manual_review'
+		) );
+		exit;
+	}
 }
 
 // 10. Update Verified Matching Post
@@ -216,9 +268,10 @@ if ( ! empty( $matched_post['id'] ) ) {
 		clear_cache( array( 'news_' ) );
 	}
 
-	// Audit record
+	// Atomic Audit record insertion
 	$db->query( "INSERT INTO {$audit_table} (file_code, event, post_id, ip, received_at, status) 
-				VALUES ('{$safe_fc}', '{$safe_event}', '{$post_id}', '{$safe_ip}', '{$now_date}', 'processed')" );
+				VALUES ('{$safe_fc}', '{$safe_event}', '{$post_id}', '{$safe_ip}', '{$now_date}', 'processed')
+				ON DUPLICATE KEY UPDATE status = 'processed', post_id = '{$post_id}'" );
 
 	echo json_encode( array(
 		'success'   => true,
@@ -226,7 +279,7 @@ if ( ! empty( $matched_post['id'] ) ) {
 		'post_id'   => $post_id,
 		'file_code' => $file_code,
 		'event'     => $event,
-		'msg'       => 'Existing post ID ' . $post_id . ' verified by IMDb and updated with new video code.'
+		'msg'       => 'Existing post ID ' . $post_id . ' strictly verified by unpacked IMDb and updated with new video code.'
 	) );
 	exit;
 }

@@ -59,7 +59,13 @@
             })
             .catch(function(err) {
                 var body = document.getElementById('peestream-modal-body');
-                if (body) body.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Failed to load modal: ' + err + '</div>';
+                if (body) {
+                    body.textContent = '';
+                    var errDiv = document.createElement('div');
+                    errDiv.style.cssText = 'color:#ef4444;padding:20px;text-align:center;';
+                    errDiv.textContent = 'Failed to load modal: ' + err;
+                    body.appendChild(errDiv);
+                }
             });
     };
 

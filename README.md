@@ -75,7 +75,7 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
        ip VARCHAR(45) NOT NULL DEFAULT '',
        received_at DATETIME NOT NULL,
        status VARCHAR(32) NOT NULL DEFAULT 'processed',
-       INDEX idx_fc_event (file_code, event),
+       UNIQUE KEY uq_fc_event (file_code, event),
        INDEX idx_ip_time (ip, received_at)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -91,6 +91,19 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
        status VARCHAR(32) NOT NULL DEFAULT 'completed',
        INDEX idx_post_id (post_id)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+   CREATE TABLE IF NOT EXISTS dle_peestream_queue (
+       id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+       post_id INT UNSIGNED NOT NULL,
+       url VARCHAR(500) NOT NULL,
+       file_code VARCHAR(64) NOT NULL,
+       status VARCHAR(32) NOT NULL DEFAULT 'processing',
+       created_at DATETIME NOT NULL,
+       updated_at DATETIME NOT NULL,
+       error_msg VARCHAR(255) NOT NULL DEFAULT '',
+       INDEX idx_status (status),
+       INDEX idx_post_id (post_id)
+   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
    ```
 
 ---
@@ -102,7 +115,7 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
 3. Select your **Default Cloud Folder** where uploaded videos will be saved.
 4. Specify your DLE extra field name (default: `peestream`).
 5. Configure responsive fluid 16:9 sizing and autoplay preferences.
-6. Under the **Webhook Receiver** tab, click **Generate** to create a cryptographically secure 32-character secret key.
+6. Under the **Webhook Receiver** tab, click **Generate** to create a cryptographically secure secret key (auto-initialized upon installation).
 7. Copy the Webhook URL into your PeeStream account to enable real-time TV and movie synchronization.
 
 ---
@@ -140,15 +153,17 @@ Example usage in `fullstory.tpl`:
 ## Changelog
 
 ### Version 1.0.1 (Security & Functionality Hardening)
-- **P0 Security:** Strict webhook rejection if secret is unconfigured or < 16 characters. Added rate limiting (60 req/min) and replay attack protection table (`dle_peestream_webhooks`).
-- **P0 XSS Protection:** Complete refactor of editor modal JS to use DOM `textContent` and `createElement`, removing unescaped HTML injections.
-- **P0 CSRF:** Mandatory `dle_login_hash` verification for all state-changing AJAX requests.
-- **P0 Permissions:** Removed insecure 0666/0777 advice; enforced strict 0644 config permissions.
-- **P0 Matching:** Webhook strictly requires verified IMDb ID matching; eliminated arbitrary title LIKE updates.
+- **P0 Security & Webhook Hardening:** Strict webhook rejection if secret is unconfigured or < 16 characters (`hash_equals`). Added rate limiting (60 req/min), atomic replay protection with `UNIQUE KEY uq_fc_event (file_code, event)`, and event whitelist (`video_ready`, `new_episode_ready`, `movie_ready`).
+- **P0 XSS Protection:** Complete refactor of editor modal JS and migrator logs to use DOM `textContent` and `createElement`, removing unescaped HTML injections.
+- **P0 CSRF & Permissions:** Mandatory `dle_login_hash` verification for all state-changing AJAX requests. Enforced strict 0644 config file permissions.
+- **P0 Strict IMDb Matching:** Webhook strictly unpacks custom fields using `xfieldsdataload()` and matches against the actual IMDb ID value. Ambiguous matches (>1 article) return 409 Conflict for manual review to prevent wrong overwrites.
+- **P0 Auto-Init Secret:** Fixed automatic generation of strong 48-hex webhook secret during plugin installation and admin panel bootstrap even if configuration file is pre-packaged. Secret generator upgraded to `window.crypto.getRandomValues`.
+- **P1 Safe Auto-Migrator & CanPlay Verification:** Migrator now schedules remote upload and checks `/api/file/info` for `canplay=1`. The original DLE article is modified ONLY when video playback is 100% verified. If upload is processing or fails, original links remain untouched.
+- **P1 Persistent Transcode Queue:** Added persistent `{PREFIX}_peestream_queue` table with "Check Pending Encodings" background queue manager for async processing.
+- **P1 Surgical Rollback:** Rollback engine performs targeted link restoration instead of blindly overwriting posts, preserving subsequent editorial updates and articles.
 - **P1 API Alignment:** Fully aligned with official PeeStream API endpoints (`/api/account/info`, `/api/folder/list`, `/api/file/list`).
-- **P1 Safe Auto-Migrator:** Added Dry-Run mode, automated pre-migration DB backups (`dle_peestream_backups`), 1-click rollback, and safe multi-link article handling.
 - **P1 Hosters:** Cleaned hoster list to strictly confirmed endpoints (MixDrop, Streamtape, VOE, StreamWish, EarnVids, PixelDrain).
-- **P2 Packaging:** Clean root archive structure without `upload/` prefix for direct FTP extraction and Plugin Manager compatibility.
+- **P2 Packaging & Full GPLv2:** Added full GNU GPLv2 license file and clean root ZIP archive structure without `upload/` prefix.
 
 ---
 

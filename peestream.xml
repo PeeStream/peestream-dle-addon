@@ -16,7 +16,7 @@
 	ip VARCHAR(45) NOT NULL DEFAULT '',
 	received_at DATETIME NOT NULL,
 	status VARCHAR(32) NOT NULL DEFAULT 'processed',
-	INDEX idx_fc_event (file_code, event),
+	UNIQUE KEY uq_fc_event (file_code, event),
 	INDEX idx_ip_time (ip, received_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -30,6 +30,19 @@ CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_backups (
 	new_code VARCHAR(64) NOT NULL DEFAULT '',
 	backup_time DATETIME NOT NULL,
 	status VARCHAR(32) NOT NULL DEFAULT 'completed',
+	INDEX idx_post_id (post_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_queue (
+	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+	post_id INT UNSIGNED NOT NULL,
+	url VARCHAR(500) NOT NULL,
+	file_code VARCHAR(64) NOT NULL,
+	status VARCHAR(32) NOT NULL DEFAULT 'processing',
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL,
+	error_msg VARCHAR(255) NOT NULL DEFAULT '',
+	INDEX idx_status (status),
 	INDEX idx_post_id (post_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]></mysqlinstall>
 	<mysqlupgrade><![CDATA[CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_webhooks (
@@ -40,7 +53,7 @@ CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_backups (
 	ip VARCHAR(45) NOT NULL DEFAULT '',
 	received_at DATETIME NOT NULL,
 	status VARCHAR(32) NOT NULL DEFAULT 'processed',
-	INDEX idx_fc_event (file_code, event),
+	UNIQUE KEY uq_fc_event (file_code, event),
 	INDEX idx_ip_time (ip, received_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -55,18 +68,66 @@ CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_backups (
 	backup_time DATETIME NOT NULL,
 	status VARCHAR(32) NOT NULL DEFAULT 'completed',
 	INDEX idx_post_id (post_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_queue (
+	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+	post_id INT UNSIGNED NOT NULL,
+	url VARCHAR(500) NOT NULL,
+	file_code VARCHAR(64) NOT NULL,
+	status VARCHAR(32) NOT NULL DEFAULT 'processing',
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL,
+	error_msg VARCHAR(255) NOT NULL DEFAULT '',
+	INDEX idx_status (status),
+	INDEX idx_post_id (post_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]></mysqlupgrade>
 	<mysqlenable><![CDATA[]]></mysqlenable>
 	<mysqldisable><![CDATA[]]></mysqldisable>
 	<mysqldelete><![CDATA[]]></mysqldelete>
 	<phpinstall><![CDATA[$c_file = ENGINE_DIR . '/data/peestream.conf.php';
-if( !file_exists( $c_file ) ) {
-	$init_secret = bin2hex( random_bytes( 16 ) );
-	$init_data = "<?PHP\n\n\$peestream_config = array (\n\t'api_key' => '',\n\t'player_domain' => 'https://peeplayer.com',\n\t'api_domain' => 'https://peestream.com',\n\t'default_folder_id' => '0',\n\t'responsive' => '1',\n\t'width' => '100%',\n\t'height' => '500',\n\t'aspect_ratio' => '16:9',\n\t'autoplay' => '0',\n\t'allow_fullscreen' => '1',\n\t'xfield_name' => 'peestream',\n\t'webhook_secret' => '{$init_secret}',\n\t'auto_create_news' => '0',\n\t'default_category' => '1',\n\t'moderate_new_posts' => '1',\n);\n\n?>";
-	@file_put_contents( $c_file, $init_data );
-	@chmod( $c_file, 0644 );
-}]]></phpinstall>
+$peestream_config = array();
+if( file_exists( $c_file ) ) {
+	include( $c_file );
+}
+$init_secret = bin2hex( random_bytes( 24 ) );
+$defaults = array (
+	'api_key' => '',
+	'player_domain' => 'https://peeplayer.com',
+	'api_domain' => 'https://peestream.com',
+	'default_folder_id' => '0',
+	'responsive' => '1',
+	'width' => '100%',
+	'height' => '500',
+	'aspect_ratio' => '16:9',
+	'autoplay' => '0',
+	'allow_fullscreen' => '1',
+	'xfield_name' => 'peestream',
+	'webhook_secret' => $init_secret,
+	'auto_create_news' => '0',
+	'default_category' => '1',
+	'moderate_new_posts' => '1',
+);
+if( !is_array( $peestream_config ) ) {
+	$peestream_config = array();
+}
+$merged = array_merge( $defaults, $peestream_config );
+if( empty( $merged['webhook_secret'] ) || strlen( $merged['webhook_secret'] ) < 16 ) {
+	$merged['webhook_secret'] = $init_secret;
+}
+$content = "<?PHP\n\n\$peestream_config = " . var_export( $merged, true ) . ";\n\n?>";
+@file_put_contents( $c_file, $content );
+@chmod( $c_file, 0644 );]]></phpinstall>
 	<phpupgrade><![CDATA[$c_file = ENGINE_DIR . '/data/peestream.conf.php';
+$peestream_config = array();
+if( file_exists( $c_file ) ) {
+	include( $c_file );
+}
+if( is_array( $peestream_config ) && ( empty( $peestream_config['webhook_secret'] ) || strlen( $peestream_config['webhook_secret'] ) < 16 ) ) {
+	$peestream_config['webhook_secret'] = bin2hex( random_bytes( 24 ) );
+	$content = "<?PHP\n\n\$peestream_config = " . var_export( $peestream_config, true ) . ";\n\n?>";
+	@file_put_contents( $c_file, $content );
+}
 if( file_exists( $c_file ) ) {
 	@chmod( $c_file, 0644 );
 }]]></phpupgrade>
