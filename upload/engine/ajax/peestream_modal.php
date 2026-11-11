@@ -2,134 +2,152 @@
 /*
 =============================================================================
 PeeStream Video Player & Tools - DataLife Engine Addon
-Module: AJAX Editor Modal & Video Inserter
+Module: AJAX Editor Modal & Video Inserter (Hardened)
 File: engine/ajax/peestream_modal.php
-Version: 1.0.0
+Version: 1.0.1
 =============================================================================
 */
 
 @error_reporting( E_ALL ^ E_WARNING ^ E_NOTICE );
-@ini_set( 'display_errors', true );
+@ini_set( 'display_errors', false );
 @ini_set( 'html_errors', false );
 
 define( 'DATALIFEENGINE', true );
 define( 'ROOT_DIR', substr( dirname( __FILE__ ), 0, -12 ) );
 define( 'ENGINE_DIR', ROOT_DIR . '/engine' );
 
-// Load DLE engine
-if( file_exists( ENGINE_DIR . '/classes/plugins.class.php' ) ) {
+// Load DLE Core & Plugins
+if ( file_exists( ENGINE_DIR . '/classes/plugins.class.php' ) ) {
 	include_once ENGINE_DIR . '/classes/plugins.class.php';
 }
 
 $inc_func = ENGINE_DIR . '/inc/include/functions.inc.php';
-if( file_exists( $inc_func ) ) {
+if ( file_exists( $inc_func ) ) {
 	require_once ( $inc_func );
 }
 
-if( function_exists( 'dle_session' ) ) {
+if ( function_exists( 'dle_session' ) ) {
 	dle_session();
 }
 
 $sitelogin = ENGINE_DIR . '/modules/sitelogin.php';
-if( file_exists( $sitelogin ) ) {
+if ( file_exists( $sitelogin ) ) {
 	require_once ( $sitelogin );
 }
 
-// User authorization check
-if( empty( $is_logged ) || !$is_logged ) {
-	echo json_encode( array( 'success' => false, 'error' => 'Access denied. You must be logged in.' ) );
+// 1. User authentication & authorization check
+if ( empty( $is_logged ) || ! $is_logged ) {
+	header( 'Content-Type: application/json; charset=utf-8' );
+	http_response_code( 401 );
+	echo json_encode( array( 'success' => false, 'error' => 'Access denied. You must be logged in to DLE.' ) );
 	exit;
 }
 
-// Check permission to add/edit news
+// Permission to add/edit news: Group 1 = Admin, 2 = Chief Editor, 3 = Editor/Journalist
 $user_group = isset( $member_id['user_group'] ) ? intval( $member_id['user_group'] ) : 5;
-if( $user_group > 3 && $user_group != 1 ) {
-	// Group 1 = Administrator, 2 = Chief Editor, 3 = Editor/Journalist
-	echo json_encode( array( 'success' => false, 'error' => 'Permission denied. You cannot publish videos.' ) );
+if ( $user_group > 3 && $user_group !== 1 ) {
+	header( 'Content-Type: application/json; charset=utf-8' );
+	http_response_code( 403 );
+	echo json_encode( array( 'success' => false, 'error' => 'Permission denied. Your user group cannot publish videos.' ) );
 	exit;
 }
 
-// Load PeeStream module config
+// 2. Load PeeStream Configuration
 $conf_file = ENGINE_DIR . '/data/peestream.conf.php';
-if( file_exists( $conf_file ) ) {
+if ( file_exists( $conf_file ) ) {
 	require_once ( $conf_file );
 } else {
 	$peestream_config = array();
 }
 
 $cfg = array_merge( array(
-	'api_key' => '',
-	'player_domain' => 'https://peeplayer.com',
-	'api_domain' => 'https://peestream.com',
+	'api_key'           => '',
+	'player_domain'     => 'https://peeplayer.com',
+	'api_domain'        => 'https://peestream.com',
 	'default_folder_id' => '0',
-	'xfield_name' => 'peestream',
+	'xfield_name'       => 'peestream',
 ), isset( $peestream_config ) ? $peestream_config : array() );
 
 $action = isset( $_REQUEST['action'] ) ? trim( $_REQUEST['action'] ) : 'ui';
 
-// Helper function for cURL requests to PeeStream API
+// 3. CSRF Verification for state-changing AJAX actions
+$dle_hash = ! empty( $dle_login_hash ) ? $dle_login_hash : ( ! empty( $_SESSION['dle_login_hash'] ) ? $_SESSION['dle_login_hash'] : '' );
+
+if ( $action !== 'ui' ) {
+	header( 'Content-Type: application/json; charset=utf-8' );
+	$req_hash = isset( $_REQUEST['user_hash'] ) ? trim( $_REQUEST['user_hash'] ) : '';
+
+	if ( empty( $dle_hash ) || empty( $req_hash ) || ! hash_equals( (string)$dle_hash, (string)$req_hash ) ) {
+		http_response_code( 403 );
+		echo json_encode( array( 'success' => false, 'error' => 'Security token invalid (CSRF failure). Please refresh the page.' ) );
+		exit;
+	}
+}
+
+// Helper: Secure cURL call to PeeStream Cloud API
 function peestream_ajax_api( $endpoint, $params, $cfg ) {
-	if( empty( $cfg['api_key'] ) ) {
+	if ( empty( $cfg['api_key'] ) ) {
 		return array( 'success' => false, 'error' => 'PeeStream API key is not configured in Admin Panel.' );
 	}
-	
+
 	$params['key'] = $cfg['api_key'];
 	$url = rtrim( $cfg['api_domain'], '/' ) . '/' . ltrim( $endpoint, '/' ) . '?' . http_build_query( $params );
-	
+
 	$ch = curl_init();
 	curl_setopt( $ch, CURLOPT_URL, $url );
 	curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
 	curl_setopt( $ch, CURLOPT_TIMEOUT, 20 );
 	curl_setopt( $ch, CURLOPT_CONNECTTIMEOUT, 8 );
 	curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, true );
-	curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Modal/1.0' );
-	
+	curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Modal/1.0.1' );
+
 	$response = curl_exec( $ch );
 	$curl_err = curl_error( $ch );
 	curl_close( $ch );
-	
-	if( $curl_err ) {
-		return array( 'success' => false, 'error' => 'Network error (cURL): ' . htmlspecialchars( $curl_err ) );
+
+	if ( $curl_err ) {
+		return array( 'success' => false, 'error' => 'Network error (cURL): ' . htmlspecialchars( $curl_err, ENT_QUOTES, 'UTF-8' ) );
 	}
-	
+
 	$data = json_decode( $response, true );
-	if( !$data ) {
-		return array( 'success' => false, 'error' => 'Invalid response from PeeStream server.' );
+	if ( ! is_array( $data ) ) {
+		return array( 'success' => false, 'error' => 'Invalid JSON response from PeeStream server.' );
 	}
-	
-	if( isset( $data['status'] ) && $data['status'] != 200 ) {
-		return array( 'success' => false, 'error' => isset( $data['msg'] ) ? $data['msg'] : ( 'API error: ' . $data['status'] ) );
+
+	if ( isset( $data['status'] ) && (int)$data['status'] !== 200 ) {
+		$msg = isset( $data['msg'] ) ? $data['msg'] : ( 'API error: ' . $data['status'] );
+		return array( 'success' => false, 'error' => $msg );
 	}
-	
+
 	return array( 'success' => true, 'result' => isset( $data['result'] ) ? $data['result'] : $data );
 }
 
 // -------------------------------------------------------------
-// AJAX ACTION: Remote URL Upload (/api/upload/url)
+// ACTION: Remote URL Upload (/api/upload/url)
 // -------------------------------------------------------------
-if( $action == 'remote_upload' ) {
-	header( 'Content-Type: application/json; charset=utf-8' );
+if ( $action === 'remote_upload' ) {
 	$video_url = isset( $_POST['url'] ) ? trim( $_POST['url'] ) : '';
-	$title = isset( $_POST['title'] ) ? trim( strip_tags( $_POST['title'] ) ) : '';
-	$fld_id = isset( $_POST['fld_id'] ) ? intval( $_POST['fld_id'] ) : intval( $cfg['default_folder_id'] );
-	
-	if( empty( $video_url ) || !preg_match( '#^https?://#i', $video_url ) ) {
+	$title     = isset( $_POST['title'] ) ? trim( strip_tags( $_POST['title'] ) ) : '';
+	$fld_id    = isset( $_POST['fld_id'] ) ? intval( $_POST['fld_id'] ) : intval( $cfg['default_folder_id'] );
+
+	if ( empty( $video_url ) || ! preg_match( '#^https?://#i', $video_url ) ) {
 		echo json_encode( array( 'success' => false, 'error' => 'Please enter a valid HTTP or HTTPS video URL.' ) );
 		exit;
 	}
-	
+
 	$res = peestream_ajax_api( 'api/upload/url', array(
-		'url' => $video_url,
+		'url'       => $video_url,
 		'new_title' => $title,
-		'fld_id' => $fld_id
+		'fld_id'    => $fld_id,
 	), $cfg );
-	
-	if( $res['success'] && !empty( $res['result']['filecode'] ) ) {
+
+	if ( $res['success'] && ! empty( $res['result']['filecode'] ) ) {
+		$code = preg_replace( '/[^a-zA-Z0-9_\-]/', '', $res['result']['filecode'] );
 		echo json_encode( array(
-			'success' => true,
-			'filecode' => $res['result']['filecode'],
-			'embed_url' => rtrim( $cfg['player_domain'], '/' ) . '/e/' . $res['result']['filecode'],
-			'msg' => 'Video successfully queued for download and encoding!'
+			'success'   => true,
+			'filecode'  => $code,
+			'embed_url' => rtrim( $cfg['player_domain'], '/' ) . '/e/' . $code,
+			'msg'       => 'Video successfully queued for download and encoding!'
 		) );
 	} else {
 		echo json_encode( array( 'success' => false, 'error' => isset( $res['error'] ) ? $res['error'] : 'Failed to import video.' ) );
@@ -138,33 +156,33 @@ if( $action == 'remote_upload' ) {
 }
 
 // -------------------------------------------------------------
-// AJAX ACTION: IMDb / TMDb Import (/api/upload/imdb)
+// ACTION: IMDb Import (/api/upload/imdb)
 // -------------------------------------------------------------
-if( $action == 'imdb_upload' ) {
-	header( 'Content-Type: application/json; charset=utf-8' );
+if ( $action === 'imdb_upload' ) {
 	$imdb_id = isset( $_POST['imdb'] ) ? trim( $_POST['imdb'] ) : '';
-	$season = isset( $_POST['season'] ) ? intval( $_POST['season'] ) : 0;
-	$episode = isset( $_POST['episode'] ) ? intval( $_POST['episode'] ) : 0;
-	$fld_id = isset( $_POST['fld_id'] ) ? intval( $_POST['fld_id'] ) : intval( $cfg['default_folder_id'] );
-	
-	if( empty( $imdb_id ) ) {
-		echo json_encode( array( 'success' => false, 'error' => 'Please enter an IMDb identifier (e.g., tt1234567).' ) );
+	$season  = isset( $_POST['season'] ) ? max( 0, intval( $_POST['season'] ) ) : 0;
+	$episode = isset( $_POST['episode'] ) ? max( 0, intval( $_POST['episode'] ) ) : 0;
+	$fld_id  = isset( $_POST['fld_id'] ) ? intval( $_POST['fld_id'] ) : intval( $cfg['default_folder_id'] );
+
+	if ( empty( $imdb_id ) || ! preg_match( '/^tt\d{5,12}$/i', $imdb_id ) ) {
+		echo json_encode( array( 'success' => false, 'error' => 'Please enter a valid IMDb ID (e.g. tt1234567).' ) );
 		exit;
 	}
-	
+
 	$res = peestream_ajax_api( 'api/upload/imdb', array(
-		'imdb' => $imdb_id,
-		'season' => $season,
+		'imdb'    => $imdb_id,
+		'season'  => $season,
 		'episode' => $episode,
-		'fld_id' => $fld_id
+		'fld_id'  => $fld_id,
 	), $cfg );
-	
-	if( $res['success'] && !empty( $res['result']['filecode'] ) ) {
+
+	if ( $res['success'] && ! empty( $res['result']['filecode'] ) ) {
+		$code = preg_replace( '/[^a-zA-Z0-9_\-]/', '', $res['result']['filecode'] );
 		echo json_encode( array(
-			'success' => true,
-			'filecode' => $res['result']['filecode'],
-			'embed_url' => rtrim( $cfg['player_domain'], '/' ) . '/e/' . $res['result']['filecode'],
-			'msg' => 'IMDb title reserved and queued successfully!'
+			'success'   => true,
+			'filecode'  => $code,
+			'embed_url' => rtrim( $cfg['player_domain'], '/' ) . '/e/' . $code,
+			'msg'       => 'IMDb title reserved and queued successfully!'
 		) );
 	} else {
 		echo json_encode( array( 'success' => false, 'error' => isset( $res['error'] ) ? $res['error'] : 'Failed to import IMDb title.' ) );
@@ -173,49 +191,56 @@ if( $action == 'imdb_upload' ) {
 }
 
 // -------------------------------------------------------------
-// AJAX ACTION: List Videos (/api/lista)
+// ACTION: List My Videos (/api/file/list)
 // -------------------------------------------------------------
-if( $action == 'list_videos' ) {
-	header( 'Content-Type: application/json; charset=utf-8' );
-	$page = isset( $_POST['page'] ) ? max( 1, intval( $_POST['page'] ) ) : 1;
+if ( $action === 'list_videos' ) {
+	$page   = isset( $_POST['page'] ) ? max( 1, intval( $_POST['page'] ) ) : 1;
 	$search = isset( $_POST['search'] ) ? trim( strtolower( $_POST['search'] ) ) : '';
-	
-	$res = peestream_ajax_api( 'api/lista', array( 'page' => $page, 'per_page' => 20 ), $cfg );
-	if( !$res['success'] ) {
+
+	// Official PeeStream endpoint is /api/file/list
+	$res = peestream_ajax_api( 'api/file/list', array( 'page' => $page, 'per_page' => 50 ), $cfg );
+	if ( ! $res['success'] ) {
 		echo json_encode( array( 'success' => false, 'error' => $res['error'] ) );
 		exit;
 	}
-	
+
 	$files = isset( $res['result']['files'] ) ? $res['result']['files'] : ( is_array( $res['result'] ) ? $res['result'] : array() );
 	$items = array();
-	
-	foreach( $files as $f ) {
+
+	foreach ( $files as $f ) {
 		$code = isset( $f['file_code'] ) ? $f['file_code'] : ( isset( $f['code'] ) ? $f['code'] : '' );
-		$title = isset( $f['title'] ) ? $f['title'] : 'Untitled';
-		if( empty( $code ) ) continue;
-		
-		if( !empty( $search ) && stripos( $title, $search ) === false && stripos( $code, $search ) === false ) {
+		$code = preg_replace( '/[^a-zA-Z0-9_\-]/', '', $code );
+		if ( empty( $code ) ) continue;
+
+		$title = isset( $f['title'] ) ? (string)$f['title'] : 'Untitled';
+
+		if ( ! empty( $search ) && stripos( $title, $search ) === false && stripos( $code, $search ) === false ) {
 			continue;
 		}
-		
+
+		$created = isset( $f['uploaded'] ) ? substr( (string)$f['uploaded'], 0, 10 ) : ( isset( $f['created_at'] ) ? substr( (string)$f['created_at'], 0, 10 ) : '' );
+		$views   = isset( $f['views'] ) ? intval( $f['views'] ) : 0;
+		$state   = isset( $f['state'] ) ? (string)$f['state'] : ( ( ! empty( $f['canplay'] ) ) ? 'ready' : 'processing' );
+
 		$items[] = array(
-			'code' => $code,
-			'title' => $title,
-			'views' => isset( $f['views'] ) ? intval( $f['views'] ) : 0,
-			'created' => isset( $f['created_at'] ) ? substr( $f['created_at'], 0, 10 ) : '',
+			'code'      => $code,
+			'title'     => $title,
+			'views'     => $views,
+			'state'     => $state,
+			'created'   => $created,
 			'embed_url' => rtrim( $cfg['player_domain'], '/' ) . '/e/' . $code,
 		);
 	}
-	
+
 	echo json_encode( array( 'success' => true, 'videos' => $items ) );
 	exit;
 }
 
 // -------------------------------------------------------------
-// DEFAULT ACTION: Render Modal UI
+// DEFAULT ACTION: Render Modal UI with XSS Protection
 // -------------------------------------------------------------
 header( 'Content-Type: text/html; charset=utf-8' );
-$xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream' );
+$xf_name = htmlspecialchars( ! empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream', ENT_QUOTES, 'UTF-8' );
 ?>
 <div id="peestream-modal-wrapper" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#333;font-size:13px;">
 	<style>
@@ -239,6 +264,8 @@ $xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name']
 		#peestream-modal-wrapper .pst-alert { padding:10px 14px; border-radius:5px; margin-bottom:12px; font-size:12px; display:none; }
 		#peestream-modal-wrapper .pst-alert-success { background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; }
 		#peestream-modal-wrapper .pst-alert-danger { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+		#peestream-modal-wrapper .pst-badge-ready { background:#dcfce7; color:#15803d; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700; }
+		#peestream-modal-wrapper .pst-badge-wait { background:#fef3c7; color:#b45309; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700; }
 	</style>
 
 	<div id="pst_msg_box" class="pst-alert"></div>
@@ -268,8 +295,8 @@ $xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name']
 	<!-- TAB 2: Remote URL Upload -->
 	<div id="pst_tab_remote" class="pst-tab-content">
 		<div class="pst-form-group">
-			<label>Direct Video Link (MP4 / Host URL):</label>
-			<input type="text" id="pst_remote_url" class="pst-input" placeholder="https://example.com/video.mp4 or competitor hoster link">
+			<label>Direct Video Link (MP4 / Confirmed Hosters: MixDrop, VOE, Streamtape, StreamWish):</label>
+			<input type="text" id="pst_remote_url" class="pst-input" placeholder="https://example.com/video.mp4 or verified hoster URL">
 		</div>
 		<div class="pst-form-group">
 			<label>Video Title (Optional):</label>
@@ -291,11 +318,11 @@ $xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name']
 		<div style="display:flex;gap:15px;">
 			<div class="pst-form-group" style="flex:1;">
 				<label>Season (for TV shows):</label>
-				<input type="number" id="pst_imdb_season" class="pst-input" placeholder="0 = Movie" value="0">
+				<input type="number" id="pst_imdb_season" class="pst-input" placeholder="0 = Movie" value="0" min="0">
 			</div>
 			<div class="pst-form-group" style="flex:1;">
 				<label>Episode (for TV shows):</label>
-				<input type="number" id="pst_imdb_episode" class="pst-input" placeholder="0 = Movie" value="0">
+				<input type="number" id="pst_imdb_episode" class="pst-input" placeholder="0 = Movie" value="0" min="0">
 			</div>
 		</div>
 		<div style="margin-top:18px;">
@@ -319,11 +346,24 @@ $xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name']
 
 <script>
 var PST_XFIELD = "<?php echo $xf_name; ?>";
+var PST_USER_HASH = "<?php echo htmlspecialchars( $dle_hash, ENT_QUOTES, 'UTF-8' ); ?>";
+
+// Safe text escaping function to prevent XSS
+function pstEscapeHtml(str) {
+	if (str == null) return "";
+	return String(str)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#039;");
+}
 
 function pstShowMsg(msg, isSuccess) {
 	var box = document.getElementById("pst_msg_box");
 	box.className = "pst-alert " + (isSuccess ? "pst-alert-success" : "pst-alert-danger");
-	box.innerHTML = msg;
+	// Clean safely
+	box.textContent = msg;
 	box.style.display = "block";
 }
 
@@ -357,23 +397,24 @@ function pstApplyCode(rawCode) {
 		pstShowMsg("Please enter a valid alphanumeric video code or embed URL.", false);
 		return;
 	}
-	
+
 	var appliedToXfield = false;
-	
-	// 1. Populate DLE custom field (XField) if present in DOM
+
+	// 1. Populate DLE custom field (XField)
 	var xfInput = document.querySelector('input[name="xfield[' + PST_XFIELD + ']"], textarea[name="xfield[' + PST_XFIELD + ']"], #xfield_' + PST_XFIELD);
 	if (xfInput) {
 		xfInput.value = code;
 		appliedToXfield = true;
 	}
-	
-	// 2. Insert BBCode tag into active editor
+
+	// 2. Insert tag into active editor
 	if (typeof window.peestreamInsertIntoEditor === "function") {
 		window.peestreamInsertIntoEditor(code);
 	}
-	
-	pstShowMsg("Video code <b>" + code + "</b> inserted successfully!" + (appliedToXfield ? " (In field xfield[" + PST_XFIELD + "])" : ""), true);
-	
+
+	var successText = "Video code " + code + " inserted successfully!" + (appliedToXfield ? " (In field xfield[" + PST_XFIELD + "])" : "");
+	pstShowMsg(successText, true);
+
 	setTimeout(function() {
 		if (typeof window.peestreamCloseModal === "function") {
 			window.peestreamCloseModal();
@@ -385,20 +426,21 @@ function pstSubmitRemote() {
 	var url = document.getElementById("pst_remote_url").value;
 	var title = document.getElementById("pst_remote_title").value;
 	var btn = document.getElementById("pst_btn_remote");
-	
+
 	if (!url) {
-		pstShowMsg("Please enter a video link.", false);
+		pstShowMsg("Please enter a video URL.", false);
 		return;
 	}
-	
+
 	btn.disabled = true;
 	btn.innerHTML = "<i class='fa fa-spinner fa-spin'></i> Submitting to PeeStream...";
-	
+
 	var fd = new FormData();
 	fd.append("action", "remote_upload");
+	fd.append("user_hash", PST_USER_HASH);
 	fd.append("url", url);
 	fd.append("title", title);
-	
+
 	fetch("engine/ajax/peestream_modal.php", { method: "POST", body: fd })
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
@@ -422,21 +464,22 @@ function pstSubmitImdb() {
 	var s = document.getElementById("pst_imdb_season").value;
 	var ep = document.getElementById("pst_imdb_episode").value;
 	var btn = document.getElementById("pst_btn_imdb");
-	
+
 	if (!imdb) {
 		pstShowMsg("Please enter an IMDb ID (e.g. tt0111161).", false);
 		return;
 	}
-	
+
 	btn.disabled = true;
 	btn.innerHTML = "<i class='fa fa-spinner fa-spin'></i> Checking IMDb catalog...";
-	
+
 	var fd = new FormData();
 	fd.append("action", "imdb_upload");
+	fd.append("user_hash", PST_USER_HASH);
 	fd.append("imdb", imdb);
 	fd.append("season", s);
 	fd.append("episode", ep);
-	
+
 	fetch("engine/ajax/peestream_modal.php", { method: "POST", body: fd })
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
@@ -459,10 +502,11 @@ var pstCachedVideos = [];
 function pstLoadLibrary() {
 	var listDiv = document.getElementById("pst_lib_list");
 	listDiv.innerHTML = "<div style='text-align:center;padding:25px;color:#94a3b8;'><i class='fa fa-spinner fa-spin'></i> Loading from PeeStream account...</div>";
-	
+
 	var fd = new FormData();
 	fd.append("action", "list_videos");
-	
+	fd.append("user_hash", PST_USER_HASH);
+
 	fetch("engine/ajax/peestream_modal.php", { method: "POST", body: fd })
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
@@ -470,33 +514,93 @@ function pstLoadLibrary() {
 				pstCachedVideos = data.videos;
 				pstRenderLibraryTable(pstCachedVideos);
 			} else {
-				listDiv.innerHTML = "<div style='padding:15px;color:#dc2626;'>" + (data.error || "Could not load video library.") + "</div>";
+				listDiv.textContent = data.error || "Could not load video library.";
 			}
 		})
 		.catch(function(err) {
-			listDiv.innerHTML = "<div style='padding:15px;color:#dc2626;'>Error: " + err + "</div>";
+			listDiv.textContent = "Error: " + err;
 		});
 }
 
+// XSS-Safe DOM construction for Library Table
 function pstRenderLibraryTable(videos) {
 	var listDiv = document.getElementById("pst_lib_list");
+	listDiv.innerHTML = ""; // Clear existing
+
 	if (!videos || videos.length === 0) {
-		listDiv.innerHTML = "<div style='padding:20px;text-align:center;color:#64748b;'>No videos found on your account.</div>";
+		var emptyMsg = document.createElement("div");
+		emptyMsg.style.cssText = "padding:20px;text-align:center;color:#64748b;";
+		emptyMsg.textContent = "No videos found on your account.";
+		listDiv.appendChild(emptyMsg);
 		return;
 	}
-	
-	var html = "<table class='pst-table'><thead><tr><th>Title</th><th>Views</th><th>Date</th><th>Action</th></tr></thead><tbody>";
+
+	var table = document.createElement("table");
+	table.className = "pst-table";
+
+	var thead = document.createElement("thead");
+	var trHead = document.createElement("tr");
+	["Title", "Status", "Views", "Date", "Action"].forEach(function(thText) {
+		var th = document.createElement("th");
+		th.textContent = thText;
+		trHead.appendChild(th);
+	});
+	thead.appendChild(trHead);
+	table.appendChild(thead);
+
+	var tbody = document.createElement("tbody");
 	for (var i = 0; i < videos.length; i++) {
 		var v = videos[i];
-		html += "<tr>";
-		html += "<td style='font-weight:600;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>" + (v.title || "Untitled") + "</td>";
-		html += "<td>" + (v.views || 0) + "</td>";
-		html += "<td>" + (v.created || "-") + "</td>";
-		html += "<td><button type='button' class='pst-btn pst-btn-success' style='padding:4px 10px;font-size:11px;' onclick=\"pstApplyCode('" + v.code + "')\"><i class='fa fa-plus'></i> Insert</button></td>";
-		html += "</tr>";
+		var tr = document.createElement("tr");
+
+		// Title cell
+		var tdTitle = document.createElement("td");
+		tdTitle.style.cssText = "font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+		tdTitle.textContent = v.title || "Untitled";
+		tdTitle.title = v.title || "Untitled";
+		tr.appendChild(tdTitle);
+
+		// Status cell
+		var tdStatus = document.createElement("td");
+		var badge = document.createElement("span");
+		if (v.state === "ready") {
+			badge.className = "pst-badge-ready";
+			badge.textContent = "READY";
+		} else {
+			badge.className = "pst-badge-wait";
+			badge.textContent = (v.state || "PENDING").toUpperCase();
+		}
+		tdStatus.appendChild(badge);
+		tr.appendChild(tdStatus);
+
+		// Views cell
+		var tdViews = document.createElement("td");
+		tdViews.textContent = v.views || 0;
+		tr.appendChild(tdViews);
+
+		// Date cell
+		var tdDate = document.createElement("td");
+		tdDate.textContent = v.created || "-";
+		tr.appendChild(tdDate);
+
+		// Action cell
+		var tdAction = document.createElement("td");
+		var btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "pst-btn pst-btn-success";
+		btn.style.cssText = "padding:4px 10px;font-size:11px;";
+		btn.innerHTML = "<i class='fa fa-plus'></i> Insert";
+		btn.setAttribute("data-code", v.code);
+		btn.onclick = function() {
+			pstApplyCode(this.getAttribute("data-code"));
+		};
+		tdAction.appendChild(btn);
+		tr.appendChild(tdAction);
+
+		tbody.appendChild(tr);
 	}
-	html += "</tbody></table>";
-	listDiv.innerHTML = html;
+	table.appendChild(tbody);
+	listDiv.appendChild(table);
 }
 
 function pstFilterLibrary() {

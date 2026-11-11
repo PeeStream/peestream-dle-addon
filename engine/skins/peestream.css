@@ -1,0 +1,40 @@
+/*
+=============================================================================
+PeeStream Video Player & Tools - CSS Stylesheet for DLE
+File: engine/skins/peestream.css
+Version: 1.0.0
+=============================================================================
+*/
+
+.peestream-responsive-container {
+    position: relative;
+    width: 100%;
+    padding-bottom: 56.25%; /* 16:9 Aspect Ratio */
+    height: 0;
+    overflow: hidden;
+    border-radius: 6px;
+    background: #000;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+}
+
+.peestream-responsive-container iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+}
+
+.peestream-fixed-container {
+    max-width: 100%;
+    overflow: hidden;
+    border-radius: 6px;
+    background: #000;
+}
+
+.peestream-fixed-container iframe {
+    border: 0;
+    display: block;
+    max-width: 100%;
+}

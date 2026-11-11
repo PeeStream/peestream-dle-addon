@@ -40,8 +40,9 @@
             overlay.style.display = 'flex';
         }
         
-        // Fetch AJAX modal content
-        fetch('engine/ajax/peestream_modal.php?action=ui')
+        // Fetch AJAX modal content securely
+        var hashParam = (typeof dle_login_hash !== 'undefined') ? '&user_hash=' + encodeURIComponent(dle_login_hash) : '';
+        fetch('engine/ajax/peestream_modal.php?action=ui' + hashParam)
             .then(function(res) { return res.text(); })
             .then(function(html) {
                 var body = document.getElementById('peestream-modal-body');
