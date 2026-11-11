@@ -56,7 +56,7 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
 ## Installation Guide
 
 ### Method A: DLE Plugin Manager (Recommended)
-1. Download `dle_peestream_v1.0.2.zip` and extract the files.
+1. Download `dle_peestream_v1.0.3.zip` and extract the files.
 2. In your DLE Administration Panel, navigate to **Plugin Management** (`?mod=plugins`).
 3. Click **Upload Plugin** and select `peestream.xml`.
 4. Upload the `engine/` and `language/` directories to your server root (if not automatically extracted).
@@ -96,6 +96,7 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
        post_id INT UNSIGNED NOT NULL,
        original_url VARCHAR(500) NOT NULL,
+       url_hash VARCHAR(64) NOT NULL DEFAULT '',
        filecode VARCHAR(64) NOT NULL DEFAULT '',
        state VARCHAR(32) NOT NULL DEFAULT 'pending',
        original_xfields MEDIUMTEXT,
@@ -103,12 +104,34 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
        original_full MEDIUMTEXT,
        status VARCHAR(32) NOT NULL DEFAULT 'pending',
        owner_token VARCHAR(64) NOT NULL DEFAULT '',
+       retry_count INT UNSIGNED NOT NULL DEFAULT 0,
        created_at DATETIME NOT NULL,
        updated_at DATETIME NOT NULL,
        error_msg VARCHAR(255) NOT NULL DEFAULT '',
-       UNIQUE KEY uq_post_orig (post_id, original_url(191)),
+       UNIQUE KEY uq_post_urlhash (post_id, url_hash),
        INDEX idx_post_id (post_id),
        INDEX idx_status (status)
+   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+   CREATE TABLE IF NOT EXISTS dle_peestream_queue_archive (
+       id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+       original_queue_id INT UNSIGNED NOT NULL DEFAULT 0,
+       post_id INT UNSIGNED NOT NULL,
+       original_url VARCHAR(500) NOT NULL,
+       url_hash VARCHAR(64) NOT NULL DEFAULT '',
+       filecode VARCHAR(64) NOT NULL DEFAULT '',
+       state VARCHAR(32) NOT NULL DEFAULT 'pending',
+       original_xfields MEDIUMTEXT,
+       original_short MEDIUMTEXT,
+       original_full MEDIUMTEXT,
+       status VARCHAR(32) NOT NULL DEFAULT 'pending',
+       owner_token VARCHAR(64) NOT NULL DEFAULT '',
+       retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+       created_at DATETIME NOT NULL,
+       updated_at DATETIME NOT NULL,
+       archived_at DATETIME NOT NULL,
+       error_msg VARCHAR(255) NOT NULL DEFAULT '',
+       INDEX idx_post_id (post_id)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
    ```
 

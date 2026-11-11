@@ -3,7 +3,7 @@
 =============================================================================
 PeeStream Video Transcode Queue Worker - DataLife Engine Addon
 File: engine/modules/peestream_cron.php
-Version: 1.0.1
+Version: 1.0.3
 Author: PeeStream Team
 Official Website: https://peestream.com | Player: https://peeplayer.com
 =============================================================================
@@ -175,6 +175,13 @@ if( !function_exists( 'peestream_get_affected_rows' ) ) {
 	}
 }
 
+// Full 256-bit binary-safe SHA-256 hash helper for case-sensitive, collision-free URL indexing
+if ( ! function_exists( 'peestream_url_hash' ) ) {
+	function peestream_url_hash( $url ) {
+		return hash( 'sha256', trim( (string)$url ) );
+	}
+}
+
 // Unified atomic queue item claim by ID (with owner_token fencing and stale lock recovery)
 if( !function_exists( 'peestream_claim_queue_item' ) ) {
 	function peestream_claim_queue_item( $db, $queue_id, $owner_token = '', $timeout_seconds = 300 ) {
@@ -195,7 +202,7 @@ if( !function_exists( 'peestream_claim_queue_item' ) ) {
 	}
 }
 
-// Release claimed task with specific status, error message, and strict owner_token check
+// Release claimed task with specific status, error message, and strict owner_token check (no unowned leakage)
 if( !function_exists( 'peestream_release_task' ) ) {
 	function peestream_release_task( $db, $queue_id, $owner_token = '', $new_status = 'pending', $error_msg = '' ) {
 		$qid = intval( $queue_id );
@@ -205,7 +212,7 @@ if( !function_exists( 'peestream_release_task' ) ) {
 		$safe_err = $db->safesql( $error_msg );
 		$safe_token = $db->safesql( $owner_token );
 		$queue_table = PREFIX . "_peestream_queue";
-		$where_token = !empty( $owner_token ) ? " AND (owner_token='{$safe_token}' OR owner_token='')" : "";
+		$where_token = !empty( $owner_token ) ? " AND owner_token='{$safe_token}'" : "";
 		$sql = "UPDATE {$queue_table} SET status='{$safe_status}', owner_token='', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$qid}'{$where_token}";
 		$res = $db->query( $sql, false );
 		return ( $res && peestream_get_affected_rows( $db ) > 0 );
@@ -310,8 +317,12 @@ if( !function_exists( 'peestream_apply_post_replacement' ) ) {
 			$aff = peestream_get_affected_rows( $db );
 
 			if( $upd_post && $aff > 0 ) {
-				// Success! Promote backup to completed
-				$db->query( "UPDATE {$backup_table} SET status='completed' WHERE id='{$cur_backup_id}'", false );
+				// Success! Promote backup to completed and strictly verify persistence
+				$upd_b = $db->query( "UPDATE {$backup_table} SET status='completed' WHERE id='{$cur_backup_id}'", false );
+				$chk_b = $db->super_query( "SELECT status FROM {$backup_table} WHERE id='{$cur_backup_id}'" );
+				if ( ! $upd_b || empty( $chk_b['status'] ) || $chk_b['status'] !== 'completed' ) {
+					return array( 'success' => false, 'error' => "Post was updated, but backup finalization verification failed for backup #{$cur_backup_id}." );
+				}
 				$backup_id = $cur_backup_id;
 				return array( 'success' => true, 'backup_id' => $backup_id, 'filecode' => $new_code );
 			}
@@ -323,6 +334,220 @@ if( !function_exists( 'peestream_apply_post_replacement' ) ) {
 		}
 
 		return array( 'success' => false, 'error' => "Optimistic post update lock contention on post #{$pid} after {$max_retries} attempts. Deferring task." );
+	}
+}
+
+// Interrupted task recovery: handles process crashes between post UPDATE and backup/queue finalization
+if ( ! function_exists( 'peestream_recover_interrupted_tasks' ) ) {
+	function peestream_recover_interrupted_tasks( $db, $cfg = array() ) {
+		$backup_table = PREFIX . "_peestream_backups";
+		$queue_table  = PREFIX . "_peestream_queue";
+		$post_table   = PREFIX . "_post";
+		$cutoff = date( 'Y-m-d H:i:s', time() - 120 ); // in_progress older than 2 minutes
+
+		$stale = $db->query( "SELECT * FROM {$backup_table} WHERE status='in_progress' AND backup_time < '{$cutoff}' LIMIT 25", false );
+		if( !$stale ) return 0;
+
+		$recovered_count = 0;
+		while( $b = $db->get_row( $stale ) ) {
+			$pid = intval( $b['post_id'] );
+			$new_code = trim( (string)$b['new_code'] );
+			$orig_url = trim( (string)$b['migrated_url'] );
+			$url_hash = peestream_url_hash( $orig_url );
+
+			$post = $db->super_query( "SELECT id, xfields, short_story, full_story FROM {$post_table} WHERE id='{$pid}'" );
+			if( empty( $post['id'] ) ) {
+				$db->query( "UPDATE {$backup_table} SET status='post_deleted' WHERE id='{$b['id']}'", false );
+				continue;
+			}
+
+			// Check if article already contains this PeeStream code or embed
+			$has_peestream = ( ( !empty( $new_code ) && strpos( $post['xfields'], $new_code ) !== false ) ||
+			                   ( !empty( $new_code ) && strpos( $post['short_story'], $new_code ) !== false ) ||
+			                   ( !empty( $new_code ) && strpos( $post['full_story'], $new_code ) !== false ) );
+
+			$now_date = date( 'Y-m-d H:i:s' );
+			if( $has_peestream ) {
+				// Article modification actually completed before process was interrupted!
+				$db->query( "UPDATE {$backup_table} SET status='completed' WHERE id='{$b['id']}'", false );
+				$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', owner_token='', updated_at='{$now_date}' WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR original_url='" . $db->safesql( $orig_url ) . "')", false );
+				$recovered_count++;
+			} else {
+				// Article modification was interrupted or failed before save: mark backup as apply_failed and queue as pending for safe retry
+				$db->query( "UPDATE {$backup_table} SET status='apply_failed' WHERE id='{$b['id']}'", false );
+				$db->query( "UPDATE {$queue_table} SET status='pending', state='pending', owner_token='', error_msg='Recovered from interrupted partial update', updated_at='{$now_date}' WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR original_url='" . $db->safesql( $orig_url ) . "')", false );
+				$recovered_count++;
+			}
+		}
+		return $recovered_count;
+	}
+}
+
+// Canonical Table Initializations, Archive Storage and Runtime Migrations
+if ( ! function_exists( 'peestream_ensure_schema' ) ) {
+	function peestream_ensure_schema( $db, $force = false ) {
+		static $checked = false;
+		if ( $checked && ! $force ) return true;
+
+		$backup_table  = PREFIX . "_peestream_backups";
+		$queue_table   = PREFIX . "_peestream_queue";
+		$audit_table   = PREFIX . "_peestream_webhooks";
+		$archive_table = PREFIX . "_peestream_queue_archive";
+
+		// 1. Backups Table
+		$db->query( "CREATE TABLE IF NOT EXISTS {$backup_table} (
+			id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+			post_id INT UNSIGNED NOT NULL,
+			original_xfields MEDIUMTEXT,
+			original_short MEDIUMTEXT,
+			original_full MEDIUMTEXT,
+			migrated_url VARCHAR(500) NOT NULL DEFAULT '',
+			new_code VARCHAR(64) NOT NULL DEFAULT '',
+			backup_time DATETIME NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'completed',
+			INDEX idx_post_id (post_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", false );
+
+		// 2. Active Queue Table
+		$db->query( "CREATE TABLE IF NOT EXISTS {$queue_table} (
+			id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+			post_id INT UNSIGNED NOT NULL,
+			original_url VARCHAR(500) NOT NULL,
+			url_hash VARCHAR(64) NOT NULL DEFAULT '',
+			filecode VARCHAR(64) NOT NULL DEFAULT '',
+			state VARCHAR(32) NOT NULL DEFAULT 'pending',
+			original_xfields MEDIUMTEXT,
+			original_short MEDIUMTEXT,
+			original_full MEDIUMTEXT,
+			status VARCHAR(32) NOT NULL DEFAULT 'pending',
+			owner_token VARCHAR(64) NOT NULL DEFAULT '',
+			retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			error_msg VARCHAR(255) NOT NULL DEFAULT '',
+			UNIQUE KEY uq_post_urlhash (post_id, url_hash),
+			INDEX idx_post_id (post_id),
+			INDEX idx_status (status)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", false );
+
+		// 3. Webhook Audit Table
+		$db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
+			id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+			file_code VARCHAR(64) NOT NULL,
+			event VARCHAR(32) NOT NULL DEFAULT 'video_ready',
+			post_id INT UNSIGNED NOT NULL DEFAULT 0,
+			ip VARCHAR(45) NOT NULL DEFAULT '',
+			received_at DATETIME NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'processed',
+			UNIQUE KEY uq_fc_event (file_code, event),
+			INDEX idx_ip_time (ip, received_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", false );
+
+		// 4. Archive Table for Safely Preserving Historical Duplicates
+		$db->query( "CREATE TABLE IF NOT EXISTS {$archive_table} (
+			id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+			original_queue_id INT UNSIGNED NOT NULL DEFAULT 0,
+			post_id INT UNSIGNED NOT NULL,
+			original_url VARCHAR(500) NOT NULL,
+			url_hash VARCHAR(64) NOT NULL DEFAULT '',
+			filecode VARCHAR(64) NOT NULL DEFAULT '',
+			state VARCHAR(32) NOT NULL DEFAULT 'pending',
+			original_xfields MEDIUMTEXT,
+			original_short MEDIUMTEXT,
+			original_full MEDIUMTEXT,
+			status VARCHAR(32) NOT NULL DEFAULT 'pending',
+			owner_token VARCHAR(64) NOT NULL DEFAULT '',
+			retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			archived_at DATETIME NOT NULL,
+			error_msg VARCHAR(255) NOT NULL DEFAULT '',
+			INDEX idx_post_id (post_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", false );
+
+		// 5. Column Verification and Migration on Active Queue Table
+		$col_query = $db->query( "SHOW COLUMNS FROM {$queue_table}", false );
+		if ( $col_query ) {
+			$existing_cols = array();
+			while ( $col = $db->get_row( $col_query ) ) {
+				$existing_cols[] = $col['Field'];
+			}
+			if ( ! in_array( 'original_url', $existing_cols, true ) ) {
+				if ( in_array( 'url', $existing_cols, true ) ) {
+					$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `url` `original_url` VARCHAR(500) NOT NULL", false );
+				} else {
+					$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_url` VARCHAR(500) NOT NULL AFTER `post_id`", false );
+				}
+			}
+			if ( ! in_array( 'url_hash', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `url_hash` VARCHAR(64) NOT NULL DEFAULT '' AFTER `original_url`", false );
+			}
+			if ( ! in_array( 'filecode', $existing_cols, true ) ) {
+				if ( in_array( 'file_code', $existing_cols, true ) ) {
+					$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `file_code` `filecode` VARCHAR(64) NOT NULL DEFAULT ''", false );
+				} else {
+					$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `filecode` VARCHAR(64) NOT NULL DEFAULT '' AFTER `url_hash`", false );
+				}
+			}
+			if ( ! in_array( 'state', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `state` VARCHAR(32) NOT NULL DEFAULT 'pending' AFTER `filecode`", false );
+			}
+			if ( ! in_array( 'original_xfields', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_xfields` MEDIUMTEXT AFTER `state`", false );
+			}
+			if ( ! in_array( 'original_short', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_short` MEDIUMTEXT AFTER `original_xfields`", false );
+			}
+			if ( ! in_array( 'original_full', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_full` MEDIUMTEXT AFTER `original_short`", false );
+			}
+			if ( ! in_array( 'owner_token', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `owner_token` VARCHAR(64) NOT NULL DEFAULT '' AFTER `status`", false );
+			}
+			if ( ! in_array( 'retry_count', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `retry_count` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `owner_token`", false );
+			}
+			if ( ! in_array( 'error_msg', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `error_msg` VARCHAR(255) NOT NULL DEFAULT '' AFTER `updated_at`", false );
+			}
+		}
+
+		// Ensure all existing rows have valid 64-char SHA-256 url_hash
+		$db->query( "UPDATE {$queue_table} SET url_hash = SHA2(original_url, 256) WHERE url_hash = '' OR url_hash IS NULL", false );
+
+		// 6. Ensure Collision-Free, Full-Length UNIQUE KEY on (post_id, url_hash)
+		$idx_hash_q = $db->query( "SHOW INDEX FROM {$queue_table} WHERE Key_name = 'uq_post_urlhash'", false );
+		$has_uq_hash = ( $idx_hash_q && ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $idx_hash_q ) > 0 : true ) );
+		if ( ! $has_uq_hash ) {
+			$now_date = date( 'Y-m-d H:i:s' );
+			// Safely preserve historical duplicates in archive table prior to adding unique key
+			$db->query( "INSERT IGNORE INTO {$archive_table} (original_queue_id, post_id, original_url, url_hash, filecode, state, original_xfields, original_short, original_full, status, owner_token, retry_count, created_at, updated_at, archived_at, error_msg)
+			             SELECT q1.id, q1.post_id, q1.original_url, q1.url_hash, q1.filecode, q1.state, q1.original_xfields, q1.original_short, q1.original_full, q1.status, q1.owner_token, q1.retry_count, q1.created_at, q1.updated_at, '{$now_date}', q1.error_msg
+			             FROM {$queue_table} q1
+			             INNER JOIN {$queue_table} q2
+			             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+
+			// Remove duplicate older entries from active queue
+			$db->query( "DELETE q1 FROM {$queue_table} q1
+			             INNER JOIN {$queue_table} q2
+			             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+
+			// Drop prefix-truncated legacy index if present
+			$db->query( "ALTER TABLE {$queue_table} DROP INDEX uq_post_orig", false );
+			// Add full 256-bit binary-safe unique key
+			$db->query( "ALTER TABLE {$queue_table} ADD UNIQUE KEY uq_post_urlhash (post_id, url_hash)", false );
+		}
+
+		// 7. Ensure UNIQUE KEY on Webhooks table
+		$idx_q = $db->query( "SHOW INDEX FROM {$audit_table} WHERE Key_name = 'uq_fc_event'", false );
+		$has_unique_webhook_idx = ( $idx_q && ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $idx_q ) > 0 : true ) );
+		if ( ! $has_unique_webhook_idx ) {
+			$db->query( "DELETE w1 FROM {$audit_table} w1 INNER JOIN {$audit_table} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event", false );
+			$db->query( "ALTER TABLE {$audit_table} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
+		}
+
+		$checked = true;
+		return true;
 	}
 }
 
@@ -370,7 +595,7 @@ if( !function_exists( 'peestream_api_call' ) ) {
 		curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
 		curl_setopt( $ch, CURLOPT_CONNECTTIMEOUT, 10 );
 		curl_setopt( $ch, CURLOPT_TIMEOUT, 30 );
-		curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Cron/1.0.1' );
+		curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Cron/1.0.3' );
 		curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, true );
 		
 		$resp = curl_exec( $ch );
@@ -391,6 +616,10 @@ if( !function_exists( 'peestream_api_call' ) ) {
 		return array( 'success' => true, 'data' => isset( $data['result'] ) ? $data['result'] : $data );
 	}
 }
+
+// Canonical schema check & interrupted recovery prior to processing
+peestream_ensure_schema( $db );
+peestream_recover_interrupted_tasks( $db, $cfg );
 
 $queue_table = PREFIX . "_peestream_queue";
 $backup_table = PREFIX . "_peestream_backups";
@@ -416,8 +645,35 @@ while( $item = $db->get_row( $q_res ) ) {
 
 	$checked_count++;
 	$pid = intval( $item['post_id'] );
-	$fc = $item['filecode'];
+	$fc = trim( (string)$item['filecode'] );
 	$old_url = $item['original_url'];
+
+	// Bounded retry handling if remote upload had failed or filecode is missing
+	if( empty( $fc ) ) {
+		$retry_count = isset( $item['retry_count'] ) ? intval( $item['retry_count'] ) : 0;
+		if( $retry_count < 3 ) {
+			$up_res = peestream_api_call( 'api/upload/url', $cfg['api_key'], $cfg['api_domain'], array( 'url' => $old_url ) );
+			if( $up_res['success'] && !empty( $up_res['data']['filecode'] ) ) {
+				$fc = $up_res['data']['filecode'];
+				$safe_fc = $db->safesql( $fc );
+				$db->query( "UPDATE {$queue_table} SET filecode='{$safe_fc}', status='pending', retry_count=retry_count+1, owner_token='', updated_at='{$now_date}' WHERE id='{$item['id']}' AND owner_token='{$safe_token}'" );
+				$logs[] = "[RETRY OK] Post #" . $pid . ": Upload succeeded on retry, assigned filecode " . $fc;
+				continue;
+			} else {
+				$err_msg = !empty( $up_res['error'] ) ? $up_res['error'] : 'Upload retry failed.';
+				$safe_err = $db->safesql( $err_msg );
+				$new_st = ( $retry_count + 1 >= 3 ) ? 'failed' : 'pending';
+				$db->query( "UPDATE {$queue_table} SET status='{$new_st}', retry_count=retry_count+1, owner_token='', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$item['id']}' AND owner_token='{$safe_token}'" );
+				$failed_count++;
+				$logs[] = "[RETRY FAIL] Post #" . $pid . ": " . $err_msg;
+				continue;
+			}
+		} else {
+			$db->query( "UPDATE {$queue_table} SET status='failed', owner_token='', error_msg='Max retry count (3) exceeded for URL upload.', updated_at='{$now_date}' WHERE id='{$item['id']}' AND owner_token='{$safe_token}'" );
+			$failed_count++;
+			continue;
+		}
+	}
 
 	$info = peestream_api_call( 'api/file/info', $cfg['api_key'], $cfg['api_domain'], array( 'file_code' => $fc ) );
 	$f_info = peestream_extract_file_info( $info, $fc );
@@ -427,13 +683,17 @@ while( $item = $db->get_row( $q_res ) ) {
 		$backup_id = 0;
 		$repl_res = peestream_apply_post_replacement( $db, $pid, $old_url, $fc, $cfg, $backup_id );
 		if( $repl_res['success'] ) {
-			$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', owner_token='', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
-			$ready_count++;
-			$logs[] = "[READY] Post #" . $pid . ": Transcoding complete (canplay=1)! PeeStream player attached.";
+			$upd_q = $db->query( "UPDATE {$queue_table} SET state='ready', status='completed', owner_token='', updated_at='{$now_date}' WHERE id='{$item['id']}' AND owner_token='{$safe_token}'" );
+			if( $upd_q && peestream_get_affected_rows( $db ) > 0 ) {
+				$ready_count++;
+				$logs[] = "[READY] Post #" . $pid . ": Transcoding complete (canplay=1)! PeeStream player attached.";
+			} else {
+				$logs[] = "[FENCING ERROR] Post #" . $pid . ": Worker lost ownership of task #{$item['id']} before completion.";
+			}
 		} else {
 			if( !empty( $repl_res['conflict'] ) ) {
 				$safe_err = $db->safesql( $repl_res['error'] );
-				$db->query( "UPDATE {$queue_table} SET state='conflict', status='conflict', owner_token='', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
+				$db->query( "UPDATE {$queue_table} SET state='conflict', status='conflict', owner_token='', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$item['id']}' AND owner_token='{$safe_token}'" );
 				$conflict_count++;
 				$logs[] = "[CONFLICT] Post #" . $pid . ": Target original URL (" . $old_url . ") was removed or modified by editor. Replacement skipped.";
 			} else {
@@ -443,13 +703,13 @@ while( $item = $db->get_row( $q_res ) ) {
 			}
 		}
 	} elseif( $f_info && isset( $f_info['state'] ) && $f_info['state'] === 'failed' ) {
-		$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', owner_token='', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
+		$db->query( "UPDATE {$queue_table} SET state='failed', status='failed', owner_token='', updated_at='{$now_date}' WHERE id='{$item['id']}' AND owner_token='{$safe_token}'" );
 		$failed_count++;
 		$logs[] = "[FAILED] Post #" . $pid . ": Remote transcode failed on PeeStream. Original link preserved.";
 	} else {
 		$cur_state = ( $f_info && isset( $f_info['state'] ) ) ? $f_info['state'] : 'pending';
 		$safe_state = $db->safesql( $cur_state );
-		$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$item['id']}' AND (owner_token='{$safe_token}' OR owner_token='')" );
+		$db->query( "UPDATE {$queue_table} SET state='{$safe_state}', updated_at='{$now_date}' WHERE id='{$item['id']}' AND owner_token='{$safe_token}'" );
 		peestream_release_task( $db, $item['id'], $worker_token, 'pending' );
 	}
 }
