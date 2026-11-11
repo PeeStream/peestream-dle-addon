@@ -1,0 +1,25 @@
+<?php
+// PeeStream DLE Addon - Russian Language Pack
+$lang_peestream = array(
+	'title' => 'PeeStream Плеер и Инструменты',
+	'descr' => 'Официальный плеер, загрузчик и авто-мигратор видео для DataLife Engine',
+	'settings' => 'Настройки и статус',
+	'migrator' => 'Авто-Мигратор',
+	'docs' => 'Инструкция для шаблона',
+	'api_key' => 'PeeStream API Ключ',
+	'api_key_help' => 'Получите ваш API ключ в панели peestream.com/settings#api',
+	'player_domain' => 'Домен плеера',
+	'default_folder' => 'Папка по умолчанию',
+	'xfield' => 'Имя дополнительного поля (XField)',
+	'responsive' => 'Адаптивный 16:9 плеер',
+	'autoplay' => 'Автовоспроизведение',
+	'fullscreen' => 'Полноэкранный режим',
+	'webhook_secret' => 'Секретный ключ Webhook',
+	'save' => 'Сохранить настройки',
+	'scan_btn' => 'Сканировать базу на мертвые ссылки',
+	'start_migration' => 'Запустить авто-миграцию',
+	'pause' => 'Пауза',
+	'migrator_info' => 'Автоматически находит и заменяет неработающие ссылки с MixDrop, Doodstream, Streamtape, Filemoon, VOE на быстрый и защищенный плеер PeeStream.',
+	'insert_btn' => 'Вставить в новость',
+);
+?>

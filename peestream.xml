@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<dleplugin>
+	<name>PeeStream Player &amp; Tools</name>
+	<description>Zvanični PeeStream video plejer, uploader i alati za integraciju u DataLife Engine (DLE).</description>
+	<icon>engine/skins/images/peestream/icon.png</icon>
+	<version>1.0.0</version>
+	<dleversion>13.0-17.3</dleversion>
+	<versioncompare>greater</versioncompare>
+	<upgradeurl></upgradeurl>
+	<filelist>engine/inc/peestream.php,engine/modules/peestream.php,engine/ajax/peestream_modal.php,engine/ajax/peestream_webhook.php,engine/data/peestream.conf.php,engine/skins/peestream.css,engine/skins/images/peestream/peestream_editor.js,language/English/peestream.lng,language/Russian/peestream.lng,language/Turkish/peestream.lng</filelist>
+	<mysqlinstall><![CDATA[]]></mysqlinstall>
+	<mysqlupgrade><![CDATA[]]></mysqlupgrade>
+	<mysqlenable><![CDATA[]]></mysqlenable>
+	<mysqldisable><![CDATA[]]></mysqldisable>
+	<mysqldelete><![CDATA[]]></mysqldelete>
+	<phpinstall><![CDATA[]]></phpinstall>
+	<phpupgrade><![CDATA[]]></phpupgrade>
+	<phpenable><![CDATA[]]></phpenable>
+	<phpdisable><![CDATA[]]></phpdisable>
+	<phpdelete><![CDATA[]]></phpdelete>
+	<notice><![CDATA[Nakon instalacije plugina posjetite administratorski panel: Dodaci -> PeeStream Player kako biste unijeli vaš API ključ i podesili opcije plejera.]]></notice>
+	<file name="engine/inc/options.php">
+		<operation action="after">
+			<searchcode><![CDATA['url' => '?mod=plugins',]]></searchcode>
+			<replacecode><![CDATA['url' => '?mod=plugins',
+	),
+	array(
+		'name' => 'PeeStream Player',
+		'url' => '?mod=peestream',
+		'descr' => 'PeeStream video plejer, uploader i podešavanja',
+		'image' => 'peestream.png',
+		'access' => 'admin']]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/modules/show.full.php">
+		<operation action="before">
+			<searchcode><![CDATA[$tpl->compile( 'content' );]]></searchcode>
+			<replacecode><![CDATA[// PeeStream Video Player Integration
+if( file_exists( ENGINE_DIR . '/modules/peestream.php' ) ) {
+	include ( ENGINE_DIR . '/modules/peestream.php' );
+}
+]]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/modules/show.short.php">
+		<operation action="before">
+			<searchcode><![CDATA[$tpl->compile( 'content' );]]></searchcode>
+			<replacecode><![CDATA[// PeeStream Video Player Integration
+if( file_exists( ENGINE_DIR . '/modules/peestream.php' ) ) {
+	include ( ENGINE_DIR . '/modules/peestream.php' );
+}
+]]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/inc/addnews.php">
+		<operation action="before">
+			<searchcode><![CDATA[echofooter();]]></searchcode>
+			<replacecode><![CDATA[echo '<script src="engine/skins/images/peestream/peestream_editor.js"></script>';
+]]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/inc/editnews.php">
+		<operation action="before">
+			<searchcode><![CDATA[echofooter();]]></searchcode>
+			<replacecode><![CDATA[echo '<script src="engine/skins/images/peestream/peestream_editor.js"></script>';
+]]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/modules/addnews.php">
+		<operation action="before">
+			<searchcode><![CDATA[$tpl->compile( 'content' );]]></searchcode>
+			<replacecode><![CDATA[$tpl->copy_template .= '<script src="engine/skins/images/peestream/peestream_editor.js"></script>';
+]]></replacecode>
+		</operation>
+	</file>
+</dleplugin>
