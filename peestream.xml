@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <dleplugin>
 	<name>PeeStream Player &amp; Tools</name>
-	<description>Zvanični PeeStream video plejer, uploader i alati za integraciju u DataLife Engine (DLE).</description>
+	<description>Official PeeStream video player, uploader and auto-migration addon for DataLife Engine (DLE).</description>
 	<icon>engine/skins/images/peestream/icon.png</icon>
 	<version>1.0.0</version>
 	<dleversion>13.0-17.3</dleversion>
@@ -18,7 +18,7 @@
 	<phpenable><![CDATA[]]></phpenable>
 	<phpdisable><![CDATA[]]></phpdisable>
 	<phpdelete><![CDATA[]]></phpdelete>
-	<notice><![CDATA[Nakon instalacije plugina posjetite administratorski panel: Dodaci -> PeeStream Player kako biste unijeli vaš API ključ i podesili opcije plejera.]]></notice>
+	<notice><![CDATA[After installing the plugin, visit the Admin Panel: Plugins -> PeeStream Player to enter your API key and configure player settings.]]></notice>
 	<file name="engine/inc/options.php">
 		<operation action="after">
 			<searchcode><![CDATA['url' => '?mod=plugins',]]></searchcode>
@@ -27,7 +27,7 @@
 	array(
 		'name' => 'PeeStream Player',
 		'url' => '?mod=peestream',
-		'descr' => 'PeeStream video plejer, uploader i podešavanja',
+		'descr' => 'PeeStream video player, uploader and migration settings',
 		'image' => 'peestream.png',
 		'access' => 'admin']]></replacecode>
 		</operation>

@@ -20,13 +20,13 @@
             head.style.cssText = 'background:#0f172a;color:#ffffff;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e293b;';
             head.innerHTML = '<div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;">' +
                 '<span style="background:#0284c7;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:800;letter-spacing:0.5px;">PEESTREAM</span> ' +
-                '<span>Ubaci video u vijest</span></div>' +
+                '<span>Insert Video into Post</span></div>' +
                 '<button type="button" onclick="peestreamCloseModal()" style="background:none;border:none;color:#94a3b8;font-size:22px;line-height:1;cursor:pointer;outline:none;">&times;</button>';
             
             var body = document.createElement('div');
             body.id = 'peestream-modal-body';
             body.style.cssText = 'padding:18px 22px;max-height:80vh;overflow-y:auto;';
-            body.innerHTML = '<div style="text-align:center;padding:40px;color:#64748b;"><i class="fa fa-spinner fa-spin fa-2x"></i><div style="margin-top:10px;font-weight:600;">Učitavanje PeeStream modula...</div></div>';
+            body.innerHTML = '<div style="text-align:center;padding:40px;color:#64748b;"><i class="fa fa-spinner fa-spin fa-2x"></i><div style="margin-top:10px;font-weight:600;">Loading PeeStream module...</div></div>';
             
             box.appendChild(head);
             box.appendChild(body);
@@ -40,14 +40,14 @@
             overlay.style.display = 'flex';
         }
         
-        // Učitaj AJAX sadržaj
+        // Fetch AJAX modal content
         fetch('engine/ajax/peestream_modal.php?action=ui')
             .then(function(res) { return res.text(); })
             .then(function(html) {
                 var body = document.getElementById('peestream-modal-body');
                 if (body) {
                     body.innerHTML = html;
-                    // Ponovo izvrši skripte iz učitanog HTML-a
+                    // Execute scripts embedded in the loaded HTML
                     var scripts = body.getElementsByTagName('script');
                     for (var i = 0; i < scripts.length; i++) {
                         var s = document.createElement('script');
@@ -58,7 +58,7 @@
             })
             .catch(function(err) {
                 var body = document.getElementById('peestream-modal-body');
-                if (body) body.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Nije uspjelo učitavanje modala: ' + err + '</div>';
+                if (body) body.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Failed to load modal: ' + err + '</div>';
             });
     };
 
@@ -91,7 +91,7 @@
             } catch(e) {}
         }
         
-        // 3. Klasični BBCode / Textarea
+        // 3. Classic BBCode / Textarea
         var targetArea = document.getElementById('short_story') || document.getElementById('full_story');
         if (targetArea) {
             if (typeof window.insert_font === 'function') {
@@ -108,11 +108,11 @@
         }
     };
 
-    // Automatsko dodavanje dugmeta na DLE alatnu traku
+    // Auto-inject button into DLE toolbar
     function peestreamInjectButton() {
         if (document.getElementById('pst_editor_btn')) return;
         
-        // Pokušaj pronalaženja BBCode trake sa alatima
+        // Locate BBCode toolbar
         var bbcodes = document.querySelector('.bb-pane') || document.querySelector('.bb-codes') || document.querySelector('#b_bbcodes');
         if (bbcodes) {
             var btn = document.createElement('div');
@@ -120,7 +120,7 @@
             btn.className = 'bb-btn';
             btn.style.cssText = 'display:inline-flex;align-items:center;cursor:pointer;padding:3px 8px;margin:2px;background:#0284c7;color:#fff;border-radius:4px;font-weight:700;font-size:11px;';
             btn.innerHTML = '<i class="fa fa-play" style="margin-right:4px;"></i> PeeStream';
-            btn.title = 'Ubaci PeeStream video';
+            btn.title = 'Insert PeeStream Video';
             btn.onclick = window.peestreamOpenModal;
             bbcodes.appendChild(btn);
         }
@@ -131,5 +131,5 @@
     } else {
         peestreamInjectButton();
     }
-    setTimeout(peestreamInjectButton, 1500); // Ponovni pokušaj za editore koji se dinamički inicijalizuju
+    setTimeout(peestreamInjectButton, 1500); // Retry for dynamically loaded editors
 })();

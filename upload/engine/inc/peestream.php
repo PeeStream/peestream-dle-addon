@@ -27,7 +27,7 @@ if( file_exists( $conf_file ) ) {
 	$peestream_config = array();
 }
 
-// Podrazumijevane vrijednosti
+// Default configuration settings
 $cfg = array_merge( array(
 	'api_key' => '',
 	'player_domain' => 'https://peeplayer.com',
@@ -43,10 +43,10 @@ $cfg = array_merge( array(
 	'webhook_secret' => '',
 ), $peestream_config );
 
-// Pomoćna funkcija za siguran cURL poziv ka PeeStream API-ju
+// Helper function for secure outbound cURL requests to PeeStream API
 function peestream_api_call( $endpoint, $api_key, $api_domain, $params = array() ) {
 	if( empty( $api_key ) ) {
-		return array( 'success' => false, 'error' => 'API ključ nije unesen.' );
+		return array( 'success' => false, 'error' => 'PeeStream API key is not configured.' );
 	}
 	
 	$params['key'] = $api_key;
@@ -66,22 +66,22 @@ function peestream_api_call( $endpoint, $api_key, $api_domain, $params = array()
 	curl_close( $ch );
 	
 	if( $curl_err ) {
-		return array( 'success' => false, 'error' => 'cURL greška: ' . htmlspecialchars( $curl_err ) );
+		return array( 'success' => false, 'error' => 'cURL Error: ' . htmlspecialchars( $curl_err ) );
 	}
 	
 	$data = json_decode( $response, true );
 	if( !$data ) {
-		return array( 'success' => false, 'error' => 'Neispravan odgovor servera (HTTP ' . $http_code . ').' );
+		return array( 'success' => false, 'error' => 'Invalid server response (HTTP ' . $http_code . ').' );
 	}
 	
 	if( isset( $data['status'] ) && $data['status'] != 200 ) {
-		return array( 'success' => false, 'error' => isset( $data['msg'] ) ? $data['msg'] : 'API greška (' . $data['status'] . ')' );
+		return array( 'success' => false, 'error' => isset( $data['msg'] ) ? $data['msg'] : 'API Error (' . $data['status'] . ')' );
 	}
 	
 	return array( 'success' => true, 'data' => isset( $data['result'] ) ? $data['result'] : $data );
 }
 
-// Pomoćna funkcija za detekciju linkova konkurentskih video servisa
+// Helper function to detect competitor video hoster links
 function peestream_find_competitors( $text ) {
 	$found = array();
 	$patterns = array(
@@ -108,12 +108,12 @@ function peestream_find_competitors( $text ) {
 $action = isset( $_REQUEST['action'] ) ? trim( $_REQUEST['action'] ) : '';
 
 // -------------------------------------------------------------
-// AJAX: Skeniranje baze vijesti za konkurentske linkove
+// AJAX: Scan database posts for competitor links
 // -------------------------------------------------------------
 if( $action == 'migrator_scan' ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
 	if( empty( $_REQUEST['user_hash'] ) || $_REQUEST['user_hash'] != $dle_login_hash ) {
-		echo json_encode( array( 'success' => false, 'error' => 'Nevažeći sigurnosni token.' ) );
+		echo json_encode( array( 'success' => false, 'error' => 'Invalid security token.' ) );
 		exit;
 	}
 	
@@ -150,12 +150,12 @@ if( $action == 'migrator_scan' ) {
 }
 
 // -------------------------------------------------------------
-// AJAX: Migracija pojedinačne vijesti (Batch korak)
+// AJAX: Migrate single post (Batch worker step)
 // -------------------------------------------------------------
 if( $action == 'migrator_process_one' ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
 	if( empty( $_REQUEST['user_hash'] ) || $_REQUEST['user_hash'] != $dle_login_hash ) {
-		echo json_encode( array( 'success' => false, 'error' => 'Nevažeći sigurnosni token.' ) );
+		echo json_encode( array( 'success' => false, 'error' => 'Invalid security token.' ) );
 		exit;
 	}
 	
@@ -163,18 +163,18 @@ if( $action == 'migrator_process_one' ) {
 	$old_url = trim( $_POST['url'] );
 	
 	if( !$post_id || empty( $old_url ) ) {
-		echo json_encode( array( 'success' => false, 'error' => 'Nedostaju identifikatori vijesti ili linka.' ) );
+		echo json_encode( array( 'success' => false, 'error' => 'Missing post ID or URL parameter.' ) );
 		exit;
 	}
 	
 	$table = PREFIX . "_post";
 	$row = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$post_id}'" );
 	if( empty( $row['id'] ) ) {
-		echo json_encode( array( 'success' => false, 'error' => 'Vijest ID ' . $post_id . ' ne postoji u bazi.' ) );
+		echo json_encode( array( 'success' => false, 'error' => 'Post ID ' . $post_id . ' not found in database.' ) );
 		exit;
 	}
 	
-	// 1. Poziv ka PeeStream API za prenos linka
+	// 1. Call PeeStream Remote API to queue download and transcode
 	$res = peestream_api_call( 'api/upload/url', $cfg['api_key'], $cfg['api_domain'], array(
 		'url' => $old_url,
 		'new_title' => $row['title'],
@@ -182,7 +182,7 @@ if( $action == 'migrator_process_one' ) {
 	) );
 	
 	if( !$res['success'] || empty( $res['data']['filecode'] ) ) {
-		$err = isset( $res['error'] ) ? $res['error'] : 'PeeStream API nije vratio kod za obradu.';
+		$err = isset( $res['error'] ) ? $res['error'] : 'PeeStream API failed to queue video.';
 		echo json_encode( array( 'success' => false, 'error' => $err ) );
 		exit;
 	}
@@ -190,25 +190,25 @@ if( $action == 'migrator_process_one' ) {
 	$new_code = $res['data']['filecode'];
 	$new_embed = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $new_code;
 	
-	// 2. Zamjena starog linka novim PeeStream kodom u bazi
+	// 2. Replace old URL with new PeeStream code/embed
 	$xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
 	$upd_xf = $row['xfields'];
 	$upd_short = $row['short_story'];
 	$upd_full = $row['full_story'];
 	
-	// Zamijeni u xfields ako sadrži stari link
+	// Replace in xfields if old URL is present
 	if( strpos( $upd_xf, $old_url ) !== false ) {
 		$upd_xf = str_replace( $old_url, $new_code, $upd_xf );
 	}
 	
-	// Ažuriraj namensko xfield polje
+	// Set designated xfield
 	if( function_exists( 'xfieldsdataload' ) && function_exists( 'xfieldsdatasave' ) ) {
 		$xf_arr = xfieldsdataload( $upd_xf );
 		$xf_arr[$xf_name] = $new_code;
 		$upd_xf = xfieldsdatasave( $xf_arr );
 	}
 	
-	// Zamijeni u tekstu vijesti
+	// Replace in full story or short story text
 	if( strpos( $upd_full, $old_url ) !== false ) {
 		$upd_full = str_replace( $old_url, $new_embed, $upd_full );
 	}
@@ -230,13 +230,13 @@ if( $action == 'migrator_process_one' ) {
 		'success' => true,
 		'post_id' => $post_id,
 		'filecode' => $new_code,
-		'msg' => 'Uspješno zamijenjeno kodom ' . $new_code
+		'msg' => 'Successfully replaced with PeeStream code: ' . $new_code
 	) );
 	exit;
 }
 
 // -------------------------------------------------------------
-// POST: Čuvanje konfiguracije
+// POST: Save settings
 // -------------------------------------------------------------
 $msg_alert = '';
 if( $action == 'save' ) {
@@ -264,7 +264,7 @@ if( $action == 'save' ) {
 	if( empty( $save_cfg['xfield_name'] ) ) $save_cfg['xfield_name'] = 'peestream';
 	if( empty( $save_cfg['aspect_ratio'] ) ) $save_cfg['aspect_ratio'] = '16:9';
 	
-	$conf_content = "<?PHP\n\n// PeeStream DLE Addon Configuration\n// Posljednja izmjena: " . date( "d.m.Y H:i:s" ) . "\n\n\$peestream_config = array (\n";
+	$conf_content = "<?PHP\n\n// PeeStream DLE Addon Configuration\n// Last updated: " . date( "d.m.Y H:i:s" ) . "\n\n\$peestream_config = array (\n";
 	foreach( $save_cfg as $k => $v ) {
 		$conf_content .= "\t'" . addslashes( $k ) . "' => '" . addslashes( $v ) . "',\n";
 	}
@@ -275,15 +275,15 @@ if( $action == 'save' ) {
 		fwrite( $fp, $conf_content );
 		fclose( $fp );
 		$cfg = $save_cfg;
-		$msg_alert = '<div class="alert alert-success alert-styled-left alert-arrow-left alert-bordered"><b>Uspjeh!</b> Podešavanja PeeStream modula su uspješno sačuvana.</div>';
+		$msg_alert = '<div class="alert alert-success alert-styled-left alert-arrow-left alert-bordered"><b>Success!</b> PeeStream module settings have been saved successfully.</div>';
 	} else {
-		$msg_alert = '<div class="alert alert-danger alert-styled-left alert-arrow-left alert-bordered"><b>Greška!</b> Nije uspjelo upisivanje u fajl ' . htmlspecialchars( $conf_file ) . '. Provjerite CHMOD dozvole (potrebno 0666 ili 0777).</div>';
+		$msg_alert = '<div class="alert alert-danger alert-styled-left alert-arrow-left alert-bordered"><b>Error!</b> Unable to write to ' . htmlspecialchars( $conf_file ) . '. Please check file permissions (CHMOD 0666 or 0777 required).</div>';
 	}
 }
 
-// Provjera API statusa i dohvatanje podataka o nalogu
+// Check API status and retrieve account information
 $api_status_html = '';
-$folders_options = '<option value="0">-- Glavni direktorijum (Root) --</option>';
+$folders_options = '<option value="0">-- Main Directory (Root) --</option>';
 
 if( !empty( $cfg['api_key'] ) ) {
 	$info_res = peestream_api_call( 'api/info', $cfg['api_key'], $cfg['api_domain'] );
@@ -295,8 +295,8 @@ if( !empty( $cfg['api_key'] ) ) {
 		$usr_views = htmlspecialchars( isset( $u_data['total_views'] ) ? $u_data['total_views'] : ( isset( $u_data['views'] ) ? $u_data['views'] : '0' ) );
 		
 		$api_status_html = '<div class="alert alert-success alert-styled-left alert-arrow-left alert-bordered" style="margin-bottom:20px;">'
-			. '<h6 class="alert-heading text-semibold">Povezano sa PeeStream nalogom: <b>' . $usr_name . '</b></h6>'
-			. '<span>Trenutni balans: <b>$' . $usr_bal . '</b> | Ukupno videa: <b>' . $usr_vids . '</b> | Ukupno pregleda: <b>' . $usr_views . '</b></span>'
+			. '<h6 class="alert-heading text-semibold">Connected to PeeStream Account: <b>' . $usr_name . '</b></h6>'
+			. '<span>Current Balance: <b>$' . $usr_bal . '</b> | Total Videos: <b>' . $usr_vids . '</b> | Total Views: <b>' . $usr_views . '</b></span>'
 			. '</div>';
 			
 		$folders_res = peestream_api_call( 'api/folderi', $cfg['api_key'], $cfg['api_domain'] );
@@ -311,13 +311,13 @@ if( !empty( $cfg['api_key'] ) ) {
 		}
 	} else {
 		$api_status_html = '<div class="alert alert-warning alert-styled-left alert-arrow-left alert-bordered" style="margin-bottom:20px;">'
-			. '<h6 class="alert-heading text-semibold">PeeStream API upozorenje:</h6>'
-			. '<span>' . htmlspecialchars( $info_res['error'] ) . ' Molimo provjerite uneseni API ključ.</span>'
+			. '<h6 class="alert-heading text-semibold">PeeStream API Warning:</h6>'
+			. '<span>' . htmlspecialchars( $info_res['error'] ) . ' Please verify your API key.</span>'
 			. '</div>';
 	}
 } else {
 	$api_status_html = '<div class="alert alert-info alert-styled-left alert-arrow-left alert-bordered" style="margin-bottom:20px;">'
-		. '<b>Obavještenje:</b> Unesite vaš <b>PeeStream API ključ</b> kako biste omogućili automatsku integraciju plejera i uvoz video zapisa.'
+		. '<b>Notice:</b> Enter your <b>PeeStream API key</b> to enable video player integration, library imports and auto-migration.'
 		. '</div>';
 }
 
@@ -334,27 +334,27 @@ $val_width = htmlspecialchars( $cfg['width'] );
 $val_height = htmlspecialchars( $cfg['height'] );
 $val_webhook_secret = htmlspecialchars( $cfg['webhook_secret'] );
 
-echoheader( "PeeStream Player &amp; Tools", "Podešavanja zvaničnog PeeStream video modula za DataLife Engine" );
+echoheader( "PeeStream Player &amp; Tools", "Settings and integration tools for PeeStream on DataLife Engine" );
 
 echo <<<HTML
 {$msg_alert}
 {$api_status_html}
 
-<!-- Navigacioni Tabovi -->
+<!-- Navigation Tabs -->
 <div class="navbar navbar-default navbar-component navbar-xs" style="margin-bottom:20px;">
 	<ul class="nav navbar-nav">
-		<li class="active"><a href="#tab_settings" data-toggle="tab"><i class="fa fa-sliders position-left"></i> 1. Podešavanja i status</a></li>
-		<li><a href="#tab_migrator" data-toggle="tab"><i class="fa fa-exchange position-left"></i> 2. Auto-Migrator (MixDrop/Dood zamjena)</a></li>
-		<li><a href="#tab_docs" data-toggle="tab"><i class="fa fa-book position-left"></i> 3. Uputstvo za šablon</a></li>
+		<li class="active"><a href="#tab_settings" data-toggle="tab"><i class="fa fa-sliders position-left"></i> 1. Settings &amp; Status</a></li>
+		<li><a href="#tab_migrator" data-toggle="tab"><i class="fa fa-exchange position-left"></i> 2. Auto-Migrator (MixDrop/Dood Replacement)</a></li>
+		<li><a href="#tab_docs" data-toggle="tab"><i class="fa fa-book position-left"></i> 3. Template Guide</a></li>
 	</ul>
 </div>
 
 <div class="tab-content">
-	<!-- TAB 1: PODEŠAVANJA -->
+	<!-- TAB 1: SETTINGS -->
 	<div class="tab-pane active" id="tab_settings">
 		<div class="panel panel-default">
 			<div class="panel-heading">
-				<h6 class="panel-title text-semibold"><i class="fa fa-play-circle position-left"></i> PeeStream Modul - Konfiguracija i integracija</h6>
+				<h6 class="panel-title text-semibold"><i class="fa fa-play-circle position-left"></i> PeeStream Configuration &amp; Integration</h6>
 			</div>
 			<div class="panel-body">
 				<form method="post" action="" class="form-horizontal">
@@ -362,100 +362,100 @@ echo <<<HTML
 					<input type="hidden" name="user_hash" value="{$dle_login_hash}">
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">PeeStream API ključ:</label>
+						<label class="control-label col-sm-3 text-semibold">PeeStream API Key:</label>
 						<div class="col-sm-9">
-							<input type="text" name="api_key" value="{$val_api_key}" class="form-control" placeholder="Unesite vaš privatni API ključ">
-							<span class="help-block text-muted">Vaš lični API ključ možete pronaći u vašem PeeStream uploader panelu na stranici <b>Settings &gt; API</b>.</span>
+							<input type="text" name="api_key" value="{$val_api_key}" class="form-control" placeholder="Enter your private API key">
+							<span class="help-block text-muted">Obtain your private API key from your PeeStream Uploader Panel at <b>Settings &gt; API</b>.</span>
 						</div>
 					</div>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">Domen plejera (Player Domain):</label>
+						<label class="control-label col-sm-3 text-semibold">Player Domain:</label>
 						<div class="col-sm-9">
 							<input type="text" name="player_domain" value="{$val_player_domain}" class="form-control" placeholder="https://peeplayer.com">
-							<span class="help-block text-muted">Podrazumijevani domen je <code>https://peeplayer.com</code>. Ako koristite sopstveni brendirani CNAME plejer domen, unesite ga ovdje.</span>
+							<span class="help-block text-muted">Default domain is <code>https://peeplayer.com</code>. If you use a custom branded CNAME domain, enter it here.</span>
 						</div>
 					</div>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">PeeStream API domen:</label>
+						<label class="control-label col-sm-3 text-semibold">PeeStream API Domain:</label>
 						<div class="col-sm-9">
 							<input type="text" name="api_domain" value="{$val_api_domain}" class="form-control" placeholder="https://peestream.com">
-							<span class="help-block text-muted">Podrazumijevano <code>https://peestream.com</code>.</span>
+							<span class="help-block text-muted">Default is <code>https://peestream.com</code>.</span>
 						</div>
 					</div>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">Podrazumijevani folder za uvoz:</label>
+						<label class="control-label col-sm-3 text-semibold">Default Upload Folder:</label>
 						<div class="col-sm-9">
 							<select name="default_folder_id" class="form-control">
 								{$folders_options}
 							</select>
-							<span class="help-block text-muted">Folder na vašem PeeStream nalogu u koji će se automatski svrstavati uvezeni filmovi i epizode.</span>
+							<span class="help-block text-muted">Folder on your PeeStream account where imported and uploaded videos will be placed.</span>
 						</div>
 					</div>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">Naziv DLE dodatnog polja (XField):</label>
+						<label class="control-label col-sm-3 text-semibold">DLE Extra Field (XField Name):</label>
 						<div class="col-sm-9">
 							<input type="text" name="xfield_name" value="{$val_xfield_name}" class="form-control" placeholder="peestream">
-							<span class="help-block text-muted">Naziv dodatnog polja vijesti (xfield) u koje se upisuje PeeStream kod videa (npr. <code>peestream</code> ili <code>video_player</code>).</span>
+							<span class="help-block text-muted">The name of the custom post field (xfield) used to store the PeeStream video code (e.g., <code>peestream</code> or <code>video_player</code>).</span>
 						</div>
 					</div>
 
 					<hr>
-					<h6 class="text-semibold"><i class="fa fa-television position-left"></i> Izgled i ponašanje plejera</h6>
+					<h6 class="text-semibold"><i class="fa fa-television position-left"></i> Player Appearance &amp; Playback</h6>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">Responzivni plejer (Fluid 16:9):</label>
+						<label class="control-label col-sm-3 text-semibold">Responsive Player (Fluid 16:9):</label>
 						<div class="col-sm-9">
 							<div class="checkbox">
-								<label><input type="checkbox" name="responsive" value="1" id="chk_responsive"{$chk_responsive}> Automatsko prilagođavanje širine (preporučeno, 100% širina ekrana sa 16:9 odnosom stranica)</label>
+								<label><input type="checkbox" name="responsive" value="1" id="chk_responsive"{$chk_responsive}> Automatic fluid scaling (recommended, 100% width with 16:9 aspect ratio)</label>
 							</div>
 						</div>
 					</div>
 
 					<div class="form-group" id="block_custom_size" style="{$style_custom_size}">
-						<label class="control-label col-sm-3 text-semibold">Fiksna širina i visina:</label>
+						<label class="control-label col-sm-3 text-semibold">Fixed Width and Height:</label>
 						<div class="col-sm-4">
-							<input type="text" name="width" value="{$val_width}" class="form-control" placeholder="100% ili 800px">
-							<span class="help-block text-muted">Širina (Width)</span>
+							<input type="text" name="width" value="{$val_width}" class="form-control" placeholder="100% or 800px">
+							<span class="help-block text-muted">Width</span>
 						</div>
 						<div class="col-sm-4">
 							<input type="text" name="height" value="{$val_height}" class="form-control" placeholder="500px">
-							<span class="help-block text-muted">Visina (Height)</span>
+							<span class="help-block text-muted">Height</span>
 						</div>
 					</div>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">Omogući automatsku reprodukciju (Autoplay):</label>
+						<label class="control-label col-sm-3 text-semibold">Autoplay Video:</label>
 						<div class="col-sm-9">
 							<div class="checkbox">
-								<label><input type="checkbox" name="autoplay" value="1"{$chk_autoplay}> Pokreni video automatski pri učitavanju stranice (uz prigušen zvuk u modernim pregledačima)</label>
+								<label><input type="checkbox" name="autoplay" value="1"{$chk_autoplay}> Start video automatically on page load (muted by default in modern browsers)</label>
 							</div>
 						</div>
 					</div>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">Omogući Fullscreen režim:</label>
+						<label class="control-label col-sm-3 text-semibold">Allow Fullscreen Mode:</label>
 						<div class="col-sm-9">
 							<div class="checkbox">
-								<label><input type="checkbox" name="allow_fullscreen" value="1"{$chk_fullscreen}> Dozvoli pregled preko cijelog ekrana (allowfullscreen)</label>
+								<label><input type="checkbox" name="allow_fullscreen" value="1"{$chk_fullscreen}> Allow fullscreen playback (allowfullscreen)</label>
 							</div>
 						</div>
 					</div>
 
 					<div class="form-group">
-						<label class="control-label col-sm-3 text-semibold">Sigurnosni token za Webhook (Secret):</label>
+						<label class="control-label col-sm-3 text-semibold">Webhook Secret Key:</label>
 						<div class="col-sm-9">
-							<input type="text" name="webhook_secret" value="{$val_webhook_secret}" class="form-control" placeholder="Proizvoljan tajni ključ za zaštitu webhook-a">
-							<span class="help-block text-muted">Služi za autorizaciju dolaznih obavještenja o novim epizodama serija sa PeeStream servera.</span>
+							<input type="text" name="webhook_secret" value="{$val_webhook_secret}" class="form-control" placeholder="Random secret token to protect webhook endpoint">
+							<span class="help-block text-muted">Used to authenticate incoming notifications about new TV episodes directly from PeeStream servers.</span>
 						</div>
 					</div>
 
 					<div class="form-group" style="margin-top:25px;">
 						<div class="col-sm-9 col-sm-offset-3">
-							<button type="submit" class="btn btn-primary"><i class="fa fa-floppy-o position-left"></i> Sačuvaj podešavanja</button>
+							<button type="submit" class="btn btn-primary"><i class="fa fa-floppy-o position-left"></i> Save Settings</button>
 						</div>
 					</div>
 				</form>
@@ -463,55 +463,55 @@ echo <<<HTML
 		</div>
 	</div>
 
-	<!-- TAB 2: AUTO-MIGRATOR (KILLER FEATURE) -->
+	<!-- TAB 2: AUTO-MIGRATOR -->
 	<div class="tab-pane" id="tab_migrator">
 		<div class="panel panel-default">
 			<div class="panel-heading">
-				<h6 class="panel-title text-semibold"><i class="fa fa-exchange position-left"></i> Auto-Migrator: Zamjena mrtvih MixDrop, Doodstream i Streamtape linkova</h6>
+				<h6 class="panel-title text-semibold"><i class="fa fa-exchange position-left"></i> Auto-Migrator: 1-Click Replacement of Broken MixDrop, Doodstream &amp; Streamtape Links</h6>
 			</div>
 			<div class="panel-body">
 				<div class="alert alert-info" style="margin-bottom:20px;">
 					<i class="fa fa-info-circle position-left"></i>
-					Ovaj alat automatski skenira bazu vaših vijesti (tekst i dodatna polja) i pronalazi linkove sa konkurentskih servisa koji propadaju ili brišu fajlove (MixDrop, Doodstream, Streamtape, Filemoon, VOE, itd.). 
-					PeeStream ih u pozadini preuzima i zamjenjuje funkcionalnim <b>PeeStream</b> plejerom!
+					This tool scans your article database (content &amp; custom xfields) and identifies links from dying hosters (MixDrop, Doodstream, Streamtape, Filemoon, VOE, etc.). 
+					PeeStream automatically fetches the videos in the background and replaces them with clean, ultra-fast <b>PeeStream</b> players without traffic loss!
 				</div>
 
 				<div style="display:flex;gap:15px;align-items:center;margin-bottom:20px;">
 					<button type="button" id="btn_migrator_scan" class="btn btn-info" onclick="mgrStartScan()">
-						<i class="fa fa-search position-left"></i> Skeniraj bazu vijesti
+						<i class="fa fa-search position-left"></i> Scan Database for Broken Links
 					</button>
 					<button type="button" id="btn_migrator_start" class="btn btn-success" style="display:none;" onclick="mgrStartBatch()">
-						<i class="fa fa-play position-left"></i> Pokreni automatsku migraciju
+						<i class="fa fa-play position-left"></i> Start Batch Migration
 					</button>
 					<button type="button" id="btn_migrator_pause" class="btn btn-warning" style="display:none;" onclick="mgrPauseBatch()">
-						<i class="fa fa-pause position-left"></i> Pauziraj
+						<i class="fa fa-pause position-left"></i> Pause
 					</button>
 				</div>
 
-				<!-- Statistika skenera -->
+				<!-- Scanner Stats -->
 				<div class="row" id="mgr_stats_row" style="display:none;margin-bottom:20px;">
 					<div class="col-sm-3">
 						<div class="panel panel-body bg-slate-800 text-center" style="padding:15px;">
 							<h3 class="no-margin text-semibold" id="cnt_found">0</h3>
-							<div class="text-muted text-size-small">Pronađeno za zamjenu</div>
+							<div class="text-muted text-size-small">Found to Replace</div>
 						</div>
 					</div>
 					<div class="col-sm-3">
 						<div class="panel panel-body bg-success-600 text-center" style="padding:15px;">
 							<h3 class="no-margin text-semibold" id="cnt_migrated">0</h3>
-							<div class="text-muted text-size-small">Uspješno zamijenjeno</div>
+							<div class="text-muted text-size-small">Successfully Replaced</div>
 						</div>
 					</div>
 					<div class="col-sm-3">
 						<div class="panel panel-body bg-danger-600 text-center" style="padding:15px;">
 							<h3 class="no-margin text-semibold" id="cnt_errors">0</h3>
-							<div class="text-muted text-size-small">Greške pri uvozu</div>
+							<div class="text-muted text-size-small">Import Errors</div>
 						</div>
 					</div>
 					<div class="col-sm-3">
 						<div class="panel panel-body bg-primary-600 text-center" style="padding:15px;">
 							<h3 class="no-margin text-semibold" id="cnt_progress">0%</h3>
-							<div class="text-muted text-size-small">Ukupan napredak</div>
+							<div class="text-muted text-size-small">Total Progress</div>
 						</div>
 					</div>
 				</div>
@@ -521,36 +521,36 @@ echo <<<HTML
 					<div class="progress-bar progress-bar-striped active progress-bar-success" id="mgr_progress_bar" style="width:0%;">0%</div>
 				</div>
 
-				<!-- Dnevnik događaja (Live Event Log) -->
-				<h6 class="text-semibold"><i class="fa fa-list position-left"></i> Dnevnik migracije u realnom vremenu:</h6>
+				<!-- Live Event Log -->
+				<h6 class="text-semibold"><i class="fa fa-list position-left"></i> Real-time Migration Event Log:</h6>
 				<div id="mgr_log_box" style="background:#0f172a;color:#f8fafc;font-family:monospace;font-size:12px;padding:15px;border-radius:6px;height:240px;overflow-y:auto;border:1px solid #1e293b;">
-					<div style="color:#94a3b8;">Kliknite na dugme "Skeniraj bazu vijesti" kako biste provjerili stanje linkova.</div>
+					<div style="color:#94a3b8;">Click "Scan Database for Broken Links" to start analyzing your posts.</div>
 				</div>
 			</div>
 		</div>
 	</div>
 
-	<!-- TAB 3: UPUTSTVO ZA ŠABLON -->
+	<!-- TAB 3: TEMPLATE GUIDE -->
 	<div class="tab-pane" id="tab_docs">
 		<div class="panel panel-info">
 			<div class="panel-heading">
-				<h6 class="panel-title text-semibold"><i class="fa fa-info-circle position-left"></i> Uputstvo za postavljanje plejera u šablonu (Template Tags)</h6>
+				<h6 class="panel-title text-semibold"><i class="fa fa-info-circle position-left"></i> Template Integration Guide (Template Tags)</h6>
 			</div>
 			<div class="panel-body">
-				<p>Kako biste prikazali PeeStream plejer u vijestima vašeg sajta, otvorite fajl vašeg šablona <code>templates/{vaš_šablon}/fullstory.tpl</code> i postavite sljedeći kod na mjesto gdje želite da se prikaže video:</p>
+				<p>To display the PeeStream video player in your website articles, open your active theme template file <code>templates/{your_theme}/fullstory.tpl</code> and insert the following code where you want the player to appear:</p>
 				<pre><code>[xfgiven_{$val_xfield_name}]
 &lt;div class="peestream-embed-container"&gt;
     {peestream_player}
 &lt;/div&gt;
 [/xfgiven_{$val_xfield_name}]</code></pre>
 
-				<p style="margin-top:15px;">Dostupne oznake šablona:</p>
+				<p style="margin-top:15px;">Available template tags:</p>
 				<ul>
-					<li><code>{peestream_player}</code> - Generiše kompletan responzivni plejer sa uključenim kontrolama, prevodima i opcijama.</li>
-					<li><code>[peestream] ... [/peestream]</code> - Prikazuje blok samo ukoliko članak posjeduje validan PeeStream video.</li>
-					<li><code>[!peestream] ... [/!peestream]</code> - Prikazuje blok samo ukoliko članak NEMA video.</li>
-					<li><code>{peestream_code}</code> - Prikazuje samo sirovi kod videa (pogodno za sajtove sa prilagođenim tabovima ili eksternim plejer listama).</li>
-					<li><code>{peestream_url}</code> - Prikazuje puni direktni embed URL.</li>
+					<li><code>{peestream_player}</code> - Generates the complete responsive player with controls, subtitles, and ad optimization.</li>
+					<li><code>[peestream] ... [/peestream]</code> - Conditional block displayed only if the article contains a valid PeeStream video.</li>
+					<li><code>[!peestream] ... [/!peestream]</code> - Conditional block displayed if the article DOES NOT have a video.</li>
+					<li><code>{peestream_code}</code> - Outputs raw video code (useful for custom multi-server tabbed interfaces).</li>
+					<li><code>{peestream_url}</code> - Outputs direct embed URL.</li>
 				</ul>
 			</div>
 		</div>
@@ -579,14 +579,14 @@ function mgrLog(msg, color) {
 function mgrStartScan() {
 	var btn = document.getElementById("btn_migrator_scan");
 	btn.disabled = true;
-	btn.innerHTML = "<i class='fa fa-spinner fa-spin position-left'></i> Skeniram bazu...";
-	mgrLog("Pokrećem analizu baze vijesti (dle_post)...", "#38bdf8");
+	btn.innerHTML = "<i class='fa fa-spinner fa-spin position-left'></i> Scanning Database...";
+	mgrLog("Starting database analysis (table dle_post)...", "#38bdf8");
 	
 	fetch("?mod=peestream&action=migrator_scan&user_hash=" + DLE_HASH)
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-search position-left'></i> Ponovo skeniraj";
+			btn.innerHTML = "<i class='fa fa-search position-left'></i> Scan Again";
 			if(data.success) {
 				mgrQueue = data.items || [];
 				mgrTotal = mgrQueue.length;
@@ -600,19 +600,19 @@ function mgrStartScan() {
 				document.getElementById("mgr_stats_row").style.display = "flex";
 				
 				if(mgrTotal > 0) {
-					mgrLog("Skeniranje završeno! Pronađeno ukupno <b>" + mgrTotal + "</b> članaka sa linkovima konkurentskih hostera.", "#4ade80");
+					mgrLog("Scan completed! Found <b>" + mgrTotal + "</b> articles containing competitor hoster links.", "#4ade80");
 					document.getElementById("btn_migrator_start").style.display = "inline-block";
 				} else {
-					mgrLog("Čestitamo! U vašoj bazi vijesti nema pronađenih konkurentskih linkova za migraciju.", "#a3e635");
+					mgrLog("Congratulations! No competitor links found in your database.", "#a3e635");
 				}
 			} else {
-				mgrLog("Greška pri skeniranju: " + (data.error || "Nepoznata greška"), "#f87171");
+				mgrLog("Scan failed: " + (data.error || "Unknown error"), "#f87171");
 			}
 		})
 		.catch(function(err) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-search position-left'></i> Ponovo skeniraj";
-			mgrLog("Greška mrežnog zahtjeva: " + err, "#f87171");
+			btn.innerHTML = "<i class='fa fa-search position-left'></i> Scan Again";
+			mgrLog("Network error: " + err, "#f87171");
 		});
 }
 
@@ -622,7 +622,7 @@ function mgrStartBatch() {
 	document.getElementById("btn_migrator_start").style.display = "none";
 	document.getElementById("btn_migrator_pause").style.display = "inline-block";
 	document.getElementById("mgr_progress_bar_box").style.display = "block";
-	mgrLog("Započinjem batch migraciju linkova na PeeStream...", "#38bdf8");
+	mgrLog("Starting batch link migration to PeeStream...", "#38bdf8");
 	mgrProcessNext();
 }
 
@@ -630,7 +630,7 @@ function mgrPauseBatch() {
 	mgrRunning = false;
 	document.getElementById("btn_migrator_pause").style.display = "none";
 	document.getElementById("btn_migrator_start").style.display = "inline-block";
-	mgrLog("Migracija je pauzirana na zahtjev korisnika.", "#fbbf24");
+	mgrLog("Migration paused by user.", "#fbbf24");
 }
 
 function mgrProcessNext() {
@@ -639,7 +639,7 @@ function mgrProcessNext() {
 		mgrRunning = false;
 		document.getElementById("btn_migrator_pause").style.display = "none";
 		document.getElementById("btn_migrator_start").style.display = "none";
-		mgrLog("SVI ČLANCI SU USPJEŠNO OBRADJENI! Migracija je u potpunosti završena.", "#4ade80");
+		mgrLog("ALL ARTICLES PROCESSED! Migration completed successfully.", "#4ade80");
 		return;
 	}
 	
@@ -656,11 +656,11 @@ function mgrProcessNext() {
 			if(data.success) {
 				mgrDone++;
 				document.getElementById("cnt_migrated").innerText = mgrDone;
-				mgrLog("Vijest #" + item.id + " ('" + item.title + "') -> [" + item.hoster + "] zamijenjen sa PeeStream kodom: <b>" + data.filecode + "</b>", "#4ade80");
+				mgrLog("Post #" + item.id + " ('" + item.title + "') -> [" + item.hoster + "] replaced with PeeStream code: <b>" + data.filecode + "</b>", "#4ade80");
 			} else {
 				mgrErrors++;
 				document.getElementById("cnt_errors").innerText = mgrErrors;
-				mgrLog("Vijest #" + item.id + " ('" + item.title + "') -> Greška: " + (data.error || "Nije uspjelo"), "#f87171");
+				mgrLog("Post #" + item.id + " ('" + item.title + "') -> Error: " + (data.error || "Failed"), "#f87171");
 			}
 			
 			var pct = Math.round(((mgrDone + mgrErrors) / mgrTotal) * 100);
@@ -670,13 +670,13 @@ function mgrProcessNext() {
 			pb.innerText = pct + "%";
 			
 			if(mgrRunning) {
-				setTimeout(mgrProcessNext, 400); // 400ms razmaka između zahtjeva radi stabilnosti
+				setTimeout(mgrProcessNext, 400); // 400ms interval for server stability
 			}
 		})
 		.catch(function(err) {
 			mgrErrors++;
 			document.getElementById("cnt_errors").innerText = mgrErrors;
-			mgrLog("Vijest #" + item.id + " -> Mrežna greška: " + err, "#f87171");
+			mgrLog("Post #" + item.id + " -> Network error: " + err, "#f87171");
 			if(mgrRunning) {
 				setTimeout(mgrProcessNext, 800);
 			}

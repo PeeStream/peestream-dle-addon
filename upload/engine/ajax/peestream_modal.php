@@ -16,7 +16,7 @@ define( 'DATALIFEENGINE', true );
 define( 'ROOT_DIR', substr( dirname( __FILE__ ), 0, -12 ) );
 define( 'ENGINE_DIR', ROOT_DIR . '/engine' );
 
-// Učitavanje DLE jezgra
+// Load DLE engine
 if( file_exists( ENGINE_DIR . '/classes/plugins.class.php' ) ) {
 	include_once ENGINE_DIR . '/classes/plugins.class.php';
 }
@@ -35,21 +35,21 @@ if( file_exists( $sitelogin ) ) {
 	require_once ( $sitelogin );
 }
 
-// Provjera autorizacije korisnika
+// User authorization check
 if( empty( $is_logged ) || !$is_logged ) {
-	echo json_encode( array( 'success' => false, 'error' => 'Pristup odbijen. Morate biti prijavljeni.' ) );
+	echo json_encode( array( 'success' => false, 'error' => 'Access denied. You must be logged in.' ) );
 	exit;
 }
 
-// Provjera prava za dodavanje/uređivanje vijesti
+// Check permission to add/edit news
 $user_group = isset( $member_id['user_group'] ) ? intval( $member_id['user_group'] ) : 5;
 if( $user_group > 3 && $user_group != 1 ) {
-	// Grupa 1 = Administrator, 2 = Glavni urednik, 3 = Urednik/Novinar
-	echo json_encode( array( 'success' => false, 'error' => 'Nemate dozvolu za objavljivanje video zapisa.' ) );
+	// Group 1 = Administrator, 2 = Chief Editor, 3 = Editor/Journalist
+	echo json_encode( array( 'success' => false, 'error' => 'Permission denied. You cannot publish videos.' ) );
 	exit;
 }
 
-// Učitavanje konfiguracije PeeStream modula
+// Load PeeStream module config
 $conf_file = ENGINE_DIR . '/data/peestream.conf.php';
 if( file_exists( $conf_file ) ) {
 	require_once ( $conf_file );
@@ -67,10 +67,10 @@ $cfg = array_merge( array(
 
 $action = isset( $_REQUEST['action'] ) ? trim( $_REQUEST['action'] ) : 'ui';
 
-// Pomoćna funkcija za siguran cURL poziv ka PeeStream API-ju
+// Helper function for cURL requests to PeeStream API
 function peestream_ajax_api( $endpoint, $params, $cfg ) {
 	if( empty( $cfg['api_key'] ) ) {
-		return array( 'success' => false, 'error' => 'PeeStream API ključ nije podešen u admin panelu.' );
+		return array( 'success' => false, 'error' => 'PeeStream API key is not configured in Admin Panel.' );
 	}
 	
 	$params['key'] = $cfg['api_key'];
@@ -89,23 +89,23 @@ function peestream_ajax_api( $endpoint, $params, $cfg ) {
 	curl_close( $ch );
 	
 	if( $curl_err ) {
-		return array( 'success' => false, 'error' => 'Mrežna greška (cURL): ' . htmlspecialchars( $curl_err ) );
+		return array( 'success' => false, 'error' => 'Network error (cURL): ' . htmlspecialchars( $curl_err ) );
 	}
 	
 	$data = json_decode( $response, true );
 	if( !$data ) {
-		return array( 'success' => false, 'error' => 'Neispravan odgovor sa PeeStream servera.' );
+		return array( 'success' => false, 'error' => 'Invalid response from PeeStream server.' );
 	}
 	
 	if( isset( $data['status'] ) && $data['status'] != 200 ) {
-		return array( 'success' => false, 'error' => isset( $data['msg'] ) ? $data['msg'] : ( 'API greška: ' . $data['status'] ) );
+		return array( 'success' => false, 'error' => isset( $data['msg'] ) ? $data['msg'] : ( 'API error: ' . $data['status'] ) );
 	}
 	
 	return array( 'success' => true, 'result' => isset( $data['result'] ) ? $data['result'] : $data );
 }
 
 // -------------------------------------------------------------
-// AJAX AKCIJA: Remote URL Upload (/api/upload/url)
+// AJAX ACTION: Remote URL Upload (/api/upload/url)
 // -------------------------------------------------------------
 if( $action == 'remote_upload' ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
@@ -114,7 +114,7 @@ if( $action == 'remote_upload' ) {
 	$fld_id = isset( $_POST['fld_id'] ) ? intval( $_POST['fld_id'] ) : intval( $cfg['default_folder_id'] );
 	
 	if( empty( $video_url ) || !preg_match( '#^https?://#i', $video_url ) ) {
-		echo json_encode( array( 'success' => false, 'error' => 'Unesite ispravan HTTP ili HTTPS link videa.' ) );
+		echo json_encode( array( 'success' => false, 'error' => 'Please enter a valid HTTP or HTTPS video URL.' ) );
 		exit;
 	}
 	
@@ -129,16 +129,16 @@ if( $action == 'remote_upload' ) {
 			'success' => true,
 			'filecode' => $res['result']['filecode'],
 			'embed_url' => rtrim( $cfg['player_domain'], '/' ) . '/e/' . $res['result']['filecode'],
-			'msg' => 'Video je uspješno poslat u red za obradu!'
+			'msg' => 'Video successfully queued for download and encoding!'
 		) );
 	} else {
-		echo json_encode( array( 'success' => false, 'error' => isset( $res['error'] ) ? $res['error'] : 'Neuspješan uvoz videa.' ) );
+		echo json_encode( array( 'success' => false, 'error' => isset( $res['error'] ) ? $res['error'] : 'Failed to import video.' ) );
 	}
 	exit;
 }
 
 // -------------------------------------------------------------
-// AJAX AKCIJA: IMDb / TMDb uvoz (/api/upload/imdb)
+// AJAX ACTION: IMDb / TMDb Import (/api/upload/imdb)
 // -------------------------------------------------------------
 if( $action == 'imdb_upload' ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
@@ -148,7 +148,7 @@ if( $action == 'imdb_upload' ) {
 	$fld_id = isset( $_POST['fld_id'] ) ? intval( $_POST['fld_id'] ) : intval( $cfg['default_folder_id'] );
 	
 	if( empty( $imdb_id ) ) {
-		echo json_encode( array( 'success' => false, 'error' => 'Unesite IMDb identifikator (npr. tt1234567).' ) );
+		echo json_encode( array( 'success' => false, 'error' => 'Please enter an IMDb identifier (e.g., tt1234567).' ) );
 		exit;
 	}
 	
@@ -164,16 +164,16 @@ if( $action == 'imdb_upload' ) {
 			'success' => true,
 			'filecode' => $res['result']['filecode'],
 			'embed_url' => rtrim( $cfg['player_domain'], '/' ) . '/e/' . $res['result']['filecode'],
-			'msg' => 'IMDb naslov je uspješno rezervisan i dodat u red!'
+			'msg' => 'IMDb title reserved and queued successfully!'
 		) );
 	} else {
-		echo json_encode( array( 'success' => false, 'error' => isset( $res['error'] ) ? $res['error'] : 'Neuspješan IMDb uvoz.' ) );
+		echo json_encode( array( 'success' => false, 'error' => isset( $res['error'] ) ? $res['error'] : 'Failed to import IMDb title.' ) );
 	}
 	exit;
 }
 
 // -------------------------------------------------------------
-// AJAX AKCIJA: Lista mojih videa (/api/lista)
+// AJAX ACTION: List Videos (/api/lista)
 // -------------------------------------------------------------
 if( $action == 'list_videos' ) {
 	header( 'Content-Type: application/json; charset=utf-8' );
@@ -191,7 +191,7 @@ if( $action == 'list_videos' ) {
 	
 	foreach( $files as $f ) {
 		$code = isset( $f['file_code'] ) ? $f['file_code'] : ( isset( $f['code'] ) ? $f['code'] : '' );
-		$title = isset( $f['title'] ) ? $f['title'] : 'Bez naslova';
+		$title = isset( $f['title'] ) ? $f['title'] : 'Untitled';
 		if( empty( $code ) ) continue;
 		
 		if( !empty( $search ) && stripos( $title, $search ) === false && stripos( $code, $search ) === false ) {
@@ -212,7 +212,7 @@ if( $action == 'list_videos' ) {
 }
 
 // -------------------------------------------------------------
-// DEFAULT AKCIJA: Prikaz korisničkog interfejsa (Modal UI)
+// DEFAULT ACTION: Render Modal UI
 // -------------------------------------------------------------
 header( 'Content-Type: text/html; charset=utf-8' );
 $xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream' );
@@ -243,24 +243,24 @@ $xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name']
 
 	<div id="pst_msg_box" class="pst-alert"></div>
 
-	<!-- Tabovi navigacije -->
+	<!-- Navigation Tabs -->
 	<div class="pst-tabs">
-		<button type="button" class="pst-tab-btn active" onclick="pstSwitchTab('quick')"><i class="fa fa-keyboard-o"></i> 1. Brzi unos koda</button>
+		<button type="button" class="pst-tab-btn active" onclick="pstSwitchTab('quick')"><i class="fa fa-keyboard-o"></i> 1. Quick Code</button>
 		<button type="button" class="pst-tab-btn" onclick="pstSwitchTab('remote')"><i class="fa fa-cloud-upload"></i> 2. Remote URL Upload</button>
-		<button type="button" class="pst-tab-btn" onclick="pstSwitchTab('imdb')"><i class="fa fa-film"></i> 3. IMDb uvoz</button>
-		<button type="button" class="pst-tab-btn" onclick="pstSwitchTab('library')"><i class="fa fa-list"></i> 4. Moja biblioteka</button>
+		<button type="button" class="pst-tab-btn" onclick="pstSwitchTab('imdb')"><i class="fa fa-film"></i> 3. IMDb Import</button>
+		<button type="button" class="pst-tab-btn" onclick="pstSwitchTab('library')"><i class="fa fa-list"></i> 4. My Library</button>
 	</div>
 
-	<!-- TAB 1: Brzi unos koda -->
+	<!-- TAB 1: Quick Code Insert -->
 	<div id="pst_tab_quick" class="pst-tab-content active">
 		<div class="pst-form-group">
-			<label>PeeStream kod videa ili embed link:</label>
-			<input type="text" id="pst_quick_code" class="pst-input" placeholder="npr. eK7g1xY9 ili https://peeplayer.com/e/eK7g1xY9">
-			<small style="color:#64748b;font-size:11px;">Unesite kod videa sa vašeg PeeStream panela ili kompletan embed link.</small>
+			<label>PeeStream Video Code or Embed URL:</label>
+			<input type="text" id="pst_quick_code" class="pst-input" placeholder="e.g. eK7g1xY9 or https://peeplayer.com/e/eK7g1xY9">
+			<small style="color:#64748b;font-size:11px;">Enter the video code from your PeeStream dashboard or the full player embed link.</small>
 		</div>
 		<div style="margin-top:18px;">
 			<button type="button" class="pst-btn pst-btn-primary" onclick="pstApplyCode(document.getElementById('pst_quick_code').value)">
-				<i class="fa fa-check"></i> Ubaci u vijest
+				<i class="fa fa-check"></i> Insert into Post
 			</button>
 		</div>
 	</div>
@@ -268,51 +268,51 @@ $xf_name = htmlspecialchars( !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name']
 	<!-- TAB 2: Remote URL Upload -->
 	<div id="pst_tab_remote" class="pst-tab-content">
 		<div class="pst-form-group">
-			<label>Direktan link videa (MP4 / drugi video hoster):</label>
-			<input type="text" id="pst_remote_url" class="pst-input" placeholder="https://example.com/video.mp4 ili Dood/Streamtape link">
+			<label>Direct Video Link (MP4 / Host URL):</label>
+			<input type="text" id="pst_remote_url" class="pst-input" placeholder="https://example.com/video.mp4 or competitor hoster link">
 		</div>
 		<div class="pst-form-group">
-			<label>Naslov videa (opciono):</label>
-			<input type="text" id="pst_remote_title" class="pst-input" placeholder="Naziv filma ili epizode">
+			<label>Video Title (Optional):</label>
+			<input type="text" id="pst_remote_title" class="pst-input" placeholder="Movie or Episode title">
 		</div>
 		<div style="margin-top:18px;">
 			<button type="button" id="pst_btn_remote" class="pst-btn pst-btn-primary" onclick="pstSubmitRemote()">
-				<i class="fa fa-cloud-upload"></i> Pošalji na PeeStream i preuzmi kod
+				<i class="fa fa-cloud-upload"></i> Send to PeeStream & Get Code
 			</button>
 		</div>
 	</div>
 
-	<!-- TAB 3: IMDb uvoz -->
+	<!-- TAB 3: IMDb Import -->
 	<div id="pst_tab_imdb" class="pst-tab-content">
 		<div class="pst-form-group">
-			<label>IMDb identifikator (ID):</label>
-			<input type="text" id="pst_imdb_id" class="pst-input" placeholder="npr. tt0111161 ili tt0903747">
+			<label>IMDb Identifier (ID):</label>
+			<input type="text" id="pst_imdb_id" class="pst-input" placeholder="e.g. tt0111161 or tt0903747">
 		</div>
 		<div style="display:flex;gap:15px;">
 			<div class="pst-form-group" style="flex:1;">
-				<label>Sezona (za serije):</label>
-				<input type="number" id="pst_imdb_season" class="pst-input" placeholder="0 = Film" value="0">
+				<label>Season (for TV shows):</label>
+				<input type="number" id="pst_imdb_season" class="pst-input" placeholder="0 = Movie" value="0">
 			</div>
 			<div class="pst-form-group" style="flex:1;">
-				<label>Epizoda (za serije):</label>
-				<input type="number" id="pst_imdb_episode" class="pst-input" placeholder="0 = Film" value="0">
+				<label>Episode (for TV shows):</label>
+				<input type="number" id="pst_imdb_episode" class="pst-input" placeholder="0 = Movie" value="0">
 			</div>
 		</div>
 		<div style="margin-top:18px;">
 			<button type="button" id="pst_btn_imdb" class="pst-btn pst-btn-primary" onclick="pstSubmitImdb()">
-				<i class="fa fa-search"></i> Rezerviši IMDb video i preuzmi kod
+				<i class="fa fa-search"></i> Reserve IMDb Video & Get Code
 			</button>
 		</div>
 	</div>
 
-	<!-- TAB 4: Moja biblioteka -->
+	<!-- TAB 4: My Library -->
 	<div id="pst_tab_library" class="pst-tab-content">
 		<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-			<input type="text" id="pst_lib_search" class="pst-input" style="max-width:250px;" placeholder="Filtriraj po naslovu..." onkeyup="pstFilterLibrary()">
-			<button type="button" class="pst-btn" style="background:#e2e8f0;color:#334155;" onclick="pstLoadLibrary()"><i class="fa fa-refresh"></i> Osvježi</button>
+			<input type="text" id="pst_lib_search" class="pst-input" style="max-width:250px;" placeholder="Filter by title..." onkeyup="pstFilterLibrary()">
+			<button type="button" class="pst-btn" style="background:#e2e8f0;color:#334155;" onclick="pstLoadLibrary()"><i class="fa fa-refresh"></i> Refresh</button>
 		</div>
 		<div id="pst_lib_list" style="max-height:220px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:5px;">
-			<div style="text-align:center;padding:25px;color:#94a3b8;">Učitavanje vaših video zapisa...</div>
+			<div style="text-align:center;padding:25px;color:#94a3b8;">Loading videos...</div>
 		</div>
 	</div>
 </div>
@@ -354,25 +354,25 @@ function pstExtractCode(input) {
 function pstApplyCode(rawCode) {
 	var code = pstExtractCode(rawCode);
 	if (!code) {
-		pstShowMsg("Molimo unesite validan alfanumerički kod ili embed link videa.", false);
+		pstShowMsg("Please enter a valid alphanumeric video code or embed URL.", false);
 		return;
 	}
 	
 	var appliedToXfield = false;
 	
-	// 1. Pokušaj popunjavanja dodatnog polja (XField) u DLE formi
+	// 1. Populate DLE custom field (XField) if present in DOM
 	var xfInput = document.querySelector('input[name="xfield[' + PST_XFIELD + ']"], textarea[name="xfield[' + PST_XFIELD + ']"], #xfield_' + PST_XFIELD);
 	if (xfInput) {
 		xfInput.value = code;
 		appliedToXfield = true;
 	}
 	
-	// 2. Ako postoji editor (Froala, TinyMCE ili klasični BBCode), ponudi ili ubaci tag
+	// 2. Insert BBCode tag into active editor
 	if (typeof window.peestreamInsertIntoEditor === "function") {
 		window.peestreamInsertIntoEditor(code);
 	}
 	
-	pstShowMsg("Video kod <b>" + code + "</b> je uspješno ubačen!" + (appliedToXfield ? " (U polje xfield[" + PST_XFIELD + "])" : ""), true);
+	pstShowMsg("Video code <b>" + code + "</b> inserted successfully!" + (appliedToXfield ? " (In field xfield[" + PST_XFIELD + "])" : ""), true);
 	
 	setTimeout(function() {
 		if (typeof window.peestreamCloseModal === "function") {
@@ -387,12 +387,12 @@ function pstSubmitRemote() {
 	var btn = document.getElementById("pst_btn_remote");
 	
 	if (!url) {
-		pstShowMsg("Unesite link videa.", false);
+		pstShowMsg("Please enter a video link.", false);
 		return;
 	}
 	
 	btn.disabled = true;
-	btn.innerHTML = "<i class='fa fa-spinner fa-spin'></i> Slanje na PeeStream...";
+	btn.innerHTML = "<i class='fa fa-spinner fa-spin'></i> Submitting to PeeStream...";
 	
 	var fd = new FormData();
 	fd.append("action", "remote_upload");
@@ -403,17 +403,17 @@ function pstSubmitRemote() {
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-cloud-upload'></i> Pošalji na PeeStream i preuzmi kod";
+			btn.innerHTML = "<i class='fa fa-cloud-upload'></i> Send to PeeStream & Get Code";
 			if (data.success && data.filecode) {
 				pstApplyCode(data.filecode);
 			} else {
-				pstShowMsg(data.error || "Greška pri uvozu.", false);
+				pstShowMsg(data.error || "Failed to upload video.", false);
 			}
 		})
 		.catch(function(err) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-cloud-upload'></i> Pošalji na PeeStream i preuzmi kod";
-			pstShowMsg("Mrežna greška: " + err, false);
+			btn.innerHTML = "<i class='fa fa-cloud-upload'></i> Send to PeeStream & Get Code";
+			pstShowMsg("Network error: " + err, false);
 		});
 }
 
@@ -424,12 +424,12 @@ function pstSubmitImdb() {
 	var btn = document.getElementById("pst_btn_imdb");
 	
 	if (!imdb) {
-		pstShowMsg("Unesite IMDb ID (npr. tt0111161).", false);
+		pstShowMsg("Please enter an IMDb ID (e.g. tt0111161).", false);
 		return;
 	}
 	
 	btn.disabled = true;
-	btn.innerHTML = "<i class='fa fa-spinner fa-spin'></i> Provjera IMDb kataloga...";
+	btn.innerHTML = "<i class='fa fa-spinner fa-spin'></i> Checking IMDb catalog...";
 	
 	var fd = new FormData();
 	fd.append("action", "imdb_upload");
@@ -441,24 +441,24 @@ function pstSubmitImdb() {
 		.then(function(r) { return r.json(); })
 		.then(function(data) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-search'></i> Rezerviši IMDb video i preuzmi kod";
+			btn.innerHTML = "<i class='fa fa-search'></i> Reserve IMDb Video & Get Code";
 			if (data.success && data.filecode) {
 				pstApplyCode(data.filecode);
 			} else {
-				pstShowMsg(data.error || "Greška pri IMDb uvozu.", false);
+				pstShowMsg(data.error || "Failed to import IMDb title.", false);
 			}
 		})
 		.catch(function(err) {
 			btn.disabled = false;
-			btn.innerHTML = "<i class='fa fa-search'></i> Rezerviši IMDb video i preuzmi kod";
-			pstShowMsg("Mrežna greška: " + err, false);
+			btn.innerHTML = "<i class='fa fa-search'></i> Reserve IMDb Video & Get Code";
+			pstShowMsg("Network error: " + err, false);
 		});
 }
 
 var pstCachedVideos = [];
 function pstLoadLibrary() {
 	var listDiv = document.getElementById("pst_lib_list");
-	listDiv.innerHTML = "<div style='text-align:center;padding:25px;color:#94a3b8;'><i class='fa fa-spinner fa-spin'></i> Učitavanje sa PeeStream naloga...</div>";
+	listDiv.innerHTML = "<div style='text-align:center;padding:25px;color:#94a3b8;'><i class='fa fa-spinner fa-spin'></i> Loading from PeeStream account...</div>";
 	
 	var fd = new FormData();
 	fd.append("action", "list_videos");
@@ -470,29 +470,29 @@ function pstLoadLibrary() {
 				pstCachedVideos = data.videos;
 				pstRenderLibraryTable(pstCachedVideos);
 			} else {
-				listDiv.innerHTML = "<div style='padding:15px;color:#dc2626;'>" + (data.error || "Nije uspjelo učitavanje biblioteke.") + "</div>";
+				listDiv.innerHTML = "<div style='padding:15px;color:#dc2626;'>" + (data.error || "Could not load video library.") + "</div>";
 			}
 		})
 		.catch(function(err) {
-			listDiv.innerHTML = "<div style='padding:15px;color:#dc2626;'>Greška: " + err + "</div>";
+			listDiv.innerHTML = "<div style='padding:15px;color:#dc2626;'>Error: " + err + "</div>";
 		});
 }
 
 function pstRenderLibraryTable(videos) {
 	var listDiv = document.getElementById("pst_lib_list");
 	if (!videos || videos.length === 0) {
-		listDiv.innerHTML = "<div style='padding:20px;text-align:center;color:#64748b;'>Nema pronađenih video zapisa na vašem nalogu.</div>";
+		listDiv.innerHTML = "<div style='padding:20px;text-align:center;color:#64748b;'>No videos found on your account.</div>";
 		return;
 	}
 	
-	var html = "<table class='pst-table'><thead><tr><th>Naslov</th><th>Pregledi</th><th>Datum</th><th>Akcija</th></tr></thead><tbody>";
+	var html = "<table class='pst-table'><thead><tr><th>Title</th><th>Views</th><th>Date</th><th>Action</th></tr></thead><tbody>";
 	for (var i = 0; i < videos.length; i++) {
 		var v = videos[i];
 		html += "<tr>";
-		html += "<td style='font-weight:600;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>" + (v.title || "Bez naslova") + "</td>";
+		html += "<td style='font-weight:600;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>" + (v.title || "Untitled") + "</td>";
 		html += "<td>" + (v.views || 0) + "</td>";
 		html += "<td>" + (v.created || "-") + "</td>";
-		html += "<td><button type='button' class='pst-btn pst-btn-success' style='padding:4px 10px;font-size:11px;' onclick=\"pstApplyCode('" + v.code + "')\"><i class='fa fa-plus'></i> Ubaci</button></td>";
+		html += "<td><button type='button' class='pst-btn pst-btn-success' style='padding:4px 10px;font-size:11px;' onclick=\"pstApplyCode('" + v.code + "')\"><i class='fa fa-plus'></i> Insert</button></td>";
 		html += "</tr>";
 	}
 	html += "</tbody></table>";
