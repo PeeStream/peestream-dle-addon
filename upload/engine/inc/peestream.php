@@ -106,10 +106,15 @@ function peestream_extract_file_info( $info_res, $target_filecode = '' ) {
 				}
 			}
 		}
-		return $data[0];
+		return false;
 	}
-	if( is_array( $data ) && ( isset( $data['canplay'] ) || isset( $data['filecode'] ) || isset( $data['state'] ) ) ) {
-		return $data;
+	if( is_array( $data ) ) {
+		$fc = isset( $data['filecode'] ) ? $data['filecode'] : ( isset( $data['file_code'] ) ? $data['file_code'] : '' );
+		if( empty( $target_filecode ) || $fc === $target_filecode ) {
+			if( isset( $data['canplay'] ) || isset( $data['filecode'] ) || isset( $data['state'] ) ) {
+				return $data;
+			}
+		}
 	}
 	return false;
 }
@@ -225,6 +230,8 @@ if( $col_query ) {
 	}
 }
 
+// Clean up duplicate historical webhook rows before adding UNIQUE key
+$db->query( "DELETE w1 FROM {$audit_table} w1 INNER JOIN {$audit_table} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event", false );
 $idx_q = $db->query( "SHOW INDEX FROM {$audit_table} WHERE Key_name = 'uq_fc_event'", false );
 if( !$idx_q || ( method_exists( $db, 'num_rows' ) ? !$db->num_rows( $idx_q ) : false ) ) {
 	$db->query( "ALTER TABLE {$audit_table} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
@@ -256,21 +263,28 @@ if( $action === 'migrator_scan' ) {
 		$combined = $row['xfields'] . ' ' . $row['short_story'] . ' ' . $row['full_story'];
 		$urls = peestream_find_competitors( $combined );
 		
-		// Filter out links that have already been converted to PeeStream
+		// Filter out links that have already been converted to PeeStream, deduplicate per post
+		$seen_in_post = array();
 		$unmigrated = array();
 		foreach( $urls as $u ) {
-			if( strpos( $combined, '/e/' . $u['url'] ) === false ) {
+			$u_url = trim( $u['url'] );
+			if( empty( $u_url ) || isset( $seen_in_post[$u_url] ) ) {
+				continue;
+			}
+			$seen_in_post[$u_url] = true;
+			if( strpos( $combined, '/e/' . $u_url ) === false ) {
 				$unmigrated[] = $u;
 			}
 		}
 		
-		if( !empty( $unmigrated ) ) {
+		$tot = count( $unmigrated );
+		foreach( $unmigrated as $u ) {
 			$items[] = array(
 				'id' => intval( $row['id'] ),
 				'title' => htmlspecialchars( $row['title'], ENT_QUOTES, 'UTF-8' ),
-				'hoster' => $unmigrated[0]['hoster'],
-				'url' => $unmigrated[0]['url'],
-				'total_urls' => count( $unmigrated )
+				'hoster' => $u['hoster'],
+				'url' => $u['url'],
+				'total_urls' => $tot
 			);
 		}
 	}
@@ -417,6 +431,30 @@ if( $action === 'migrator_process_one' ) {
 	
 	// Step 2: Apply replacement ONLY when canplay === 1
 	if( $is_ready ) {
+		// Re-fetch post to ensure latest content
+		$fresh = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$post_id}'" );
+		if( !empty( $fresh['id'] ) ) {
+			$row = $fresh;
+		}
+
+		// Conflict check: Ensure original_url still exists in post
+		$in_xf = ( strpos( $row['xfields'], $old_url ) !== false );
+		$in_short = ( strpos( $row['short_story'], $old_url ) !== false );
+		$in_full = ( strpos( $row['full_story'], $old_url ) !== false );
+		
+		if( !$in_xf && !$in_short && !$in_full ) {
+			$safe_err = $db->safesql( 'Conflict: target original URL was removed or modified by editor.' );
+			$db->query( "UPDATE {$queue_table} SET state='conflict', status='conflict', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE post_id='{$post_id}' AND original_url='{$safe_old_url}'" );
+			echo json_encode( array(
+				'success' => false,
+				'conflict' => true,
+				'post_id' => $post_id,
+				'filecode' => $new_code,
+				'error' => '[CONFLICT] Post #' . $post_id . ': Target original link (' . htmlspecialchars( $old_url, ENT_QUOTES, 'UTF-8' ) . ') was removed or modified by editor. Replacement aborted.'
+			) );
+			exit;
+		}
+
 		$new_embed = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $new_code;
 		$safe_orig_xf = $db->safesql( $row['xfields'] );
 		$safe_orig_short = $db->safesql( $row['short_story'] );
@@ -502,6 +540,18 @@ if( $action === 'migrator_check_queue' ) {
 			// Ready! Apply update
 			$post = $db->super_query( "SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'" );
 			if( !empty( $post['id'] ) ) {
+				// Conflict check: Ensure original_url still exists in post
+				$in_xf = ( strpos( $post['xfields'], $old_url ) !== false );
+				$in_short = ( strpos( $post['short_story'], $old_url ) !== false );
+				$in_full = ( strpos( $post['full_story'], $old_url ) !== false );
+
+				if( !$in_xf && !$in_short && !$in_full ) {
+					$safe_err = $db->safesql( 'Conflict: target original URL was removed or modified by editor.' );
+					$db->query( "UPDATE {$queue_table} SET state='conflict', status='conflict', error_msg='{$safe_err}', updated_at='{$now_date}' WHERE id='{$item['id']}'" );
+					$logs[] = "[CONFLICT] Post #" . $pid . ": Target original URL (" . $old_url . ") was removed or modified by editor. Replacement skipped.";
+					continue;
+				}
+
 				$embed_url = rtrim( $cfg['player_domain'], '/' ) . '/e/' . $fc;
 				$safe_orig_xf = $db->safesql( $post['xfields'] );
 				$safe_orig_short = $db->safesql( $post['short_story'] );

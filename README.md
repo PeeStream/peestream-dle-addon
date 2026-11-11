@@ -95,14 +95,18 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
    CREATE TABLE IF NOT EXISTS dle_peestream_queue (
        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
        post_id INT UNSIGNED NOT NULL,
-       url VARCHAR(500) NOT NULL,
-       file_code VARCHAR(64) NOT NULL,
-       status VARCHAR(32) NOT NULL DEFAULT 'processing',
+       original_url VARCHAR(500) NOT NULL,
+       filecode VARCHAR(64) NOT NULL DEFAULT '',
+       state VARCHAR(32) NOT NULL DEFAULT 'pending',
+       original_xfields MEDIUMTEXT,
+       original_short MEDIUMTEXT,
+       original_full MEDIUMTEXT,
+       status VARCHAR(32) NOT NULL DEFAULT 'pending',
        created_at DATETIME NOT NULL,
        updated_at DATETIME NOT NULL,
        error_msg VARCHAR(255) NOT NULL DEFAULT '',
-       INDEX idx_status (status),
-       INDEX idx_post_id (post_id)
+       INDEX idx_post_id (post_id),
+       INDEX idx_status (status)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
    ```
 
@@ -117,6 +121,26 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
 5. Configure responsive fluid 16:9 sizing and autoplay preferences.
 6. Under the **Webhook Receiver** tab, click **Generate** to create a cryptographically secure secret key (auto-initialized upon installation).
 7. Copy the Webhook URL into your PeeStream account to enable real-time TV and movie synchronization.
+
+---
+
+## Auto-Migrator: Queue Management & Server Cron
+
+The Auto-Migrator processes videos asynchronously so large batches do not time out:
+
+1. **Interactive Processing (Admin Panel):**
+   - In Admin Panel -> **PeeStream Player -> Competitor Migrator**, click **Check Pending Encodings** to query PeeStream and replace completed players.
+2. **Automated Server Cron Worker (Recommended):**
+   - Run the dedicated cron worker script every 2 to 5 minutes to verify transcoding status and automatically replace completed players without requiring admin interaction:
+   - **CLI (Crontab):**
+     ```bash
+     */2 * * * * php -f /path/to/engine/modules/peestream_cron.php >/dev/null 2>&1
+     ```
+   - **HTTP / Webhook Cron (cURL):**
+     ```bash
+     */2 * * * * curl -s "https://example.com/engine/modules/peestream_cron.php?secret=YOUR_WEBHOOK_SECRET" >/dev/null 2>&1
+     ```
+   - The worker incorporates non-blocking process locking (`flock`), strict conflict checks (ensuring target competitor URLs haven't been removed by editors), pre-replacement article backups, and automatic cache clearing.
 
 ---
 
@@ -154,15 +178,20 @@ Example usage in `fullstory.tpl`:
 
 ### Version 1.0.1 (Security & Functionality Hardening)
 - **P0 Canonical Database Schema & Migrations:** Unified canonical database schema across XML manifest, runtime, and upgrade routines. Added automated `ALTER TABLE` migrations for existing installations (`url` -> `original_url`, `file_code` -> `filecode`, `state`, `original_xfields`, and `UNIQUE KEY uq_fc_event`).
+- **P0 Webhook CAS Takeover & Fail-Closed Guard:** Replaced basic update with atomic compare-and-swap (`WHERE id = ... AND status = ... AND received_at = ...`) for timed-out (`>60s`) and failed webhook processing locks. Enforced fail-closed behavior on database errors, marking status as `failed`.
 - **P0 Secret Distribution Safeguard:** Stripped hardcoded secret from repository and distribution packages. Each installation generates a unique 48-hex cryptographic secret via `random_bytes(24)`, while preserving existing user keys during upgrades.
-- **P0 PeeStream API `/api/file/info` Array Payload:** Added `peestream_extract_file_info()` to properly handle the PeeStream API array response `[{filecode, canplay, ...}]` across all polling and verification paths.
+- **P0 PeeStream API `/api/file/info` Array Payload:** Added `peestream_extract_file_info()` to properly handle the PeeStream API array response `[{filecode, canplay, ...}]` across all polling and verification paths. Removed loose fallback to first array element.
 - **P0 Atomic Webhook Idempotency:** Implemented atomic event pre-reservation before modifying post content, preventing TOCTOU race conditions from concurrent duplicate webhook deliveries.
 - **P0 Strict IMDb Identifier Restriction:** Restricted IMDb matching to dedicated identifier extra fields (`imdb`, `imdb_id`, `imdbid`), rejecting general body or note fields, and rejecting ambiguous multiple matches with `409 Conflict`.
+- **P1 Multi-URL Post Scanning & Deduplication:** Migrator scans and queues all candidate competitor URLs across extra fields and stories as independent tasks with `(post_id, original_url)` deduplication.
+- **P1 Editor Conflict Detection:** Verifies that the original competitor URL still exists in the article before applying replacement. If modified or deleted by an editor, flags the task as `conflict` and aborts player insertion.
+- **P1 Automated Server Cron Worker:** Included `engine/modules/peestream_cron.php` CLI and HTTP worker for automatic queue processing with concurrency locking.
 - **P1 Surgical Rollback:** Rollback engine reverts exclusively the exact embed URL and specific extra field without raw string replace across the article, preserving all subsequent editorial updates.
 - **P1 Cryptographic JS Secret Generator:** Removed `Math.random()` fallback; secret generation strictly requires `window.crypto.getRandomValues`.
 - **P1 Safe Auto-Migrator & CanPlay Verification:** Migrator schedules remote upload and checks `/api/file/info` for `canplay=1`. The original DLE article is modified ONLY when video playback is 100% verified. If upload is processing or fails, original links remain untouched.
 - **P1 Persistent Transcode Queue:** Added persistent `{PREFIX}_peestream_queue` table with "Check Pending Encodings" background queue manager for async processing.
 - **P1 Hosters:** Cleaned hoster list to strictly confirmed endpoints (MixDrop, Streamtape, VOE, StreamWish, EarnVids, PixelDrain).
+- **P2 Pre-Migration Duplicate Deduplication:** Cleans historical duplicate webhook rows before adding `UNIQUE KEY uq_fc_event` to eliminate MySQL 1062 errors on upgrades.
 - **P2 Packaging & Full GPLv2:** Added full GNU GPLv2 license file and clean root ZIP archive structure without `upload/` prefix. Tested on DLE 13.0 through 17.3+ and PHP 7.4 through 8.3.
 
 ---

@@ -7,7 +7,7 @@
 	<dleversion>13.0-17.3</dleversion>
 	<versioncompare>greater</versioncompare>
 	<upgradeurl></upgradeurl>
-	<filelist>engine/inc/peestream.php,engine/modules/peestream.php,engine/ajax/peestream_modal.php,engine/ajax/peestream_webhook.php,engine/data/peestream.conf.php,engine/skins/peestream.css,engine/skins/images/peestream.png,engine/skins/images/peestream/icon.png,engine/skins/images/peestream/peestream_editor.js,language/English/peestream.lng,language/Russian/peestream.lng,language/Turkish/peestream.lng</filelist>
+	<filelist>engine/inc/peestream.php,engine/modules/peestream.php,engine/modules/peestream_cron.php,engine/ajax/peestream_modal.php,engine/ajax/peestream_webhook.php,engine/data/peestream.conf.php,engine/skins/peestream.css,engine/skins/images/peestream.png,engine/skins/images/peestream/icon.png,engine/skins/images/peestream/peestream_editor.js,language/English/peestream.lng,language/Russian/peestream.lng,language/Turkish/peestream.lng</filelist>
 	<mysqlinstall><![CDATA[CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_webhooks (
 	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
 	file_code VARCHAR(64) NOT NULL,
@@ -188,7 +188,8 @@ if( isset( $db ) ) {
 
 	// 2. Index migration for peestream_webhooks (ensure UNIQUE KEY uq_fc_event)
 	$idx = $db->query( "SHOW INDEX FROM {$audit_t} WHERE Key_name = 'uq_fc_event'", false );
-	if( !$idx || !$db->num_rows( $idx ) ) {
+	if( !$idx || ( method_exists( $db, 'num_rows' ) ? !$db->num_rows( $idx ) : false ) ) {
+		$db->query( "DELETE w1 FROM {$audit_t} w1 INNER JOIN {$audit_t} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event", false );
 		$db->query( "ALTER TABLE {$audit_t} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
 	}
 }]]></phpupgrade>

@@ -109,6 +109,8 @@ $db->query( "CREATE TABLE IF NOT EXISTS {$audit_table} (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" );
 
 // Runtime ALTER TABLE migration: ensure UNIQUE index exists on older tables
+// First clean up any historical duplicate rows to avoid MySQL error 1062
+$db->query( "DELETE w1 FROM {$audit_table} w1 INNER JOIN {$audit_table} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event", false );
 $idx_check = $db->query( "SHOW INDEX FROM {$audit_table} WHERE Key_name = 'uq_fc_event'", false );
 if ( ! $idx_check || ( method_exists( $db, 'num_rows' ) ? ! $db->num_rows( $idx_check ) : false ) ) {
 	$db->query( "ALTER TABLE {$audit_table} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
@@ -185,8 +187,11 @@ $now_date = date( 'Y-m-d H:i:s' );
 $reserved = $db->query( "INSERT INTO {$audit_table} (file_code, event, post_id, ip, received_at, status) 
 			VALUES ('{$safe_fc}', '{$safe_event}', 0, '{$safe_ip}', '{$now_date}', 'processing')", false );
 
-if ( ! $reserved ) {
-	// Key already exists - inspect current state
+$has_lock = false;
+if ( $reserved ) {
+	$has_lock = true;
+} else {
+	// Key already exists or DB error - inspect current state
 	$existing = $db->super_query( "SELECT id, post_id, status, received_at FROM {$audit_table} WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}' LIMIT 1" );
 	if ( $existing ) {
 		if ( $existing['status'] === 'processed' ) {
@@ -209,13 +214,50 @@ if ( ! $reserved ) {
 				) );
 				exit;
 			}
-			// Timed out processing lock (>60s) - take over reservation
-			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$existing['id']}'" );
+			// Timed out processing lock (>60s) - take over reservation with atomic CAS
+			$safe_id = intval( $existing['id'] );
+			$safe_prev_time = $db->safesql( $existing['received_at'] );
+			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$safe_id}' AND status = 'processing' AND received_at = '{$safe_prev_time}'", false );
+			$aff = method_exists( $db, 'get_affected_rows' ) ? $db->get_affected_rows() : ( isset( $db->db_id ) && is_object( $db->db_id ) && isset( $db->db_id->affected_rows ) ? $db->db_id->affected_rows : 1 );
+			if ( $aff > 0 ) {
+				$has_lock = true;
+			} else {
+				echo json_encode( array(
+					'success'   => true,
+					'action'    => 'concurrent_ignored',
+					'file_code' => $file_code,
+					'msg'       => 'Webhook event takeover failed: concurrent worker won race. Replay ignored.'
+				) );
+				exit;
+			}
 		} elseif ( $existing['status'] === 'failed' ) {
-			// Controlled retry for failed events
-			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$existing['id']}'" );
+			// Controlled retry for failed events with atomic CAS
+			$safe_id = intval( $existing['id'] );
+			$safe_prev_time = $db->safesql( $existing['received_at'] );
+			$db->query( "UPDATE {$audit_table} SET ip = '{$safe_ip}', received_at = '{$now_date}', status = 'processing' WHERE id = '{$safe_id}' AND status = 'failed' AND received_at = '{$safe_prev_time}'", false );
+			$aff = method_exists( $db, 'get_affected_rows' ) ? $db->get_affected_rows() : ( isset( $db->db_id ) && is_object( $db->db_id ) && isset( $db->db_id->affected_rows ) ? $db->db_id->affected_rows : 1 );
+			if ( $aff > 0 ) {
+				$has_lock = true;
+			} else {
+				echo json_encode( array(
+					'success'   => true,
+					'action'    => 'concurrent_ignored',
+					'file_code' => $file_code,
+					'msg'       => 'Webhook retry takeover failed: concurrent worker won race. Replay ignored.'
+				) );
+				exit;
+			}
 		}
 	}
+}
+
+if ( ! $has_lock ) {
+	http_response_code( 500 );
+	echo json_encode( array(
+		'success' => false,
+		'error'   => 'Could not acquire lock or reservation for webhook event. Processing aborted.'
+	) );
+	exit;
 }
 
 $xf_name = ! empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
@@ -300,7 +342,14 @@ if ( ! empty( $matched_post['id'] ) ) {
 	}
 
 	$safe_xf = $db->safesql( $upd_xf );
-	$db->query( "UPDATE {$table} SET xfields = '{$safe_xf}', date = '{$now_date}' WHERE id = '{$post_id}'" );
+	$upd_res = $db->query( "UPDATE {$table} SET xfields = '{$safe_xf}', date = '{$now_date}' WHERE id = '{$post_id}'", false );
+
+	if ( ! $upd_res ) {
+		$db->query( "UPDATE {$audit_table} SET status = 'failed', received_at = '{$now_date}' WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}'" );
+		http_response_code( 500 );
+		echo json_encode( array( 'success' => false, 'error' => 'Database error: failed to update post with video code.' ) );
+		exit;
+	}
 
 	if ( function_exists( 'clear_cache' ) ) {
 		clear_cache( array( 'news_' ) );
@@ -349,10 +398,16 @@ if ( ! empty( $cfg['auto_create_news'] ) && $cfg['auto_create_news'] == '1' ) {
 	// Moderation check: 1 if moderation is disabled, 0 if post needs admin review
 	$approve_state = ( ! empty( $cfg['moderate_new_posts'] ) && $cfg['moderate_new_posts'] == '1' ) ? 0 : 1;
 
-	$db->query( "INSERT INTO {$table} (autor, date, short_story, full_story, xfields, title, descr, keywords, category, alt_name, approve, allow_comm, allow_main) 
-				VALUES ('PeeStream Auto', '{$now_date}', '{$safe_short}', '{$safe_short}', '{$safe_xf}', '{$safe_title}', '{$safe_title}', '{$safe_title}', '{$cat_id}', '{$safe_alt}', {$approve_state}, 1, 1)" );
+	$ins_res = $db->query( "INSERT INTO {$table} (autor, date, short_story, full_story, xfields, title, descr, keywords, category, alt_name, approve, allow_comm, allow_main) 
+				VALUES ('PeeStream Auto', '{$now_date}', '{$safe_short}', '{$safe_short}', '{$safe_xf}', '{$safe_title}', '{$safe_title}', '{$safe_title}', '{$cat_id}', '{$safe_alt}', {$approve_state}, 1, 1)", false );
 
 	$inserted_id = intval( $db->insert_id() );
+	if ( ! $ins_res || ! $inserted_id ) {
+		$db->query( "UPDATE {$audit_table} SET status = 'failed', received_at = '{$now_date}' WHERE file_code = '{$safe_fc}' AND event = '{$safe_event}'" );
+		http_response_code( 500 );
+		echo json_encode( array( 'success' => false, 'error' => 'Database error: failed to create new post.' ) );
+		exit;
+	}
 
 	if ( function_exists( 'clear_cache' ) ) {
 		clear_cache( array( 'news_' ) );
