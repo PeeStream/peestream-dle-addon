@@ -3,7 +3,7 @@
 =============================================================================
 PeeStream Video Player & Tools - DataLife Engine Addon
 File: engine/inc/peestream.php
-Version: 1.0.1
+Version: 1.0.4
 Author: PeeStream Team
 Official Website: https://peestream.com | Player: https://peeplayer.com
 =============================================================================
@@ -377,7 +377,7 @@ function peestream_api_call( $endpoint, $api_key, $api_domain, $params = array()
 	curl_setopt( $ch, CURLOPT_TIMEOUT, 25 );
 	curl_setopt( $ch, CURLOPT_CONNECTTIMEOUT, 8 );
 	curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, true );
-	curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Plugin/1.0.1' );
+	curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Plugin/1.0.4' );
 	
 	$response = curl_exec( $ch );
 	$http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );

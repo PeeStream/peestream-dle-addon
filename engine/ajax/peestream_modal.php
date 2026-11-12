@@ -4,7 +4,7 @@
 PeeStream Video Player & Tools - DataLife Engine Addon
 Module: AJAX Editor Modal & Video Inserter (Hardened)
 File: engine/ajax/peestream_modal.php
-Version: 1.0.1
+Version: 1.0.4
 =============================================================================
 */
 
@@ -99,7 +99,7 @@ function peestream_ajax_api( $endpoint, $params, $cfg ) {
 	curl_setopt( $ch, CURLOPT_TIMEOUT, 20 );
 	curl_setopt( $ch, CURLOPT_CONNECTTIMEOUT, 8 );
 	curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, true );
-	curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Modal/1.0.1' );
+	curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Modal/1.0.4' );
 
 	$response = curl_exec( $ch );
 	$curl_err = curl_error( $ch );

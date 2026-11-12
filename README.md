@@ -56,7 +56,7 @@ Official, production-ready DataLife Engine addon for **PeeStream** (`https://pee
 ## Installation Guide
 
 ### Method A: DLE Plugin Manager (Recommended)
-1. Download `dle_peestream_v1.0.3.zip` and extract the files.
+1. Download `dle_peestream_v1.0.4.zip` (or Release Candidate `dle_peestream_v1.0.4-RC.zip`) and extract the files.
 2. In your DLE Administration Panel, navigate to **Plugin Management** (`?mod=plugins`).
 3. Click **Upload Plugin** and select `peestream.xml`.
 4. Upload the `engine/` and `language/` directories to your server root (if not automatically extracted).
@@ -194,12 +194,22 @@ Example usage in `fullstory.tpl`:
 
 ## Verification & Integrity
 
-- **Distribution Archive:** `dle_peestream_v1.0.2.zip`
-- **SHA-256 Checksum:** See `SHA256SUMS` file (verification: `sha256sum dle_peestream_v1.0.2.zip`)
+- **Distribution Archive:** `dle_peestream_v1.0.4.zip` (or `dle_peestream_v1.0.4-RC.zip`)
+- **SHA-256 Checksum:** See `SHA256SUMS` file (verification: `sha256sum dle_peestream_v1.0.4.zip`)
 
 ---
 
 ## Changelog
+
+### Version 1.0.4
+- **Binary-Safe Case-Sensitive URL Deduplication:** Enforced SHA-256 identity (`url_hash`) and `BINARY original_url` comparison in database migration deduplication and queue reservation, preventing case-sensitive video URLs from colliding on case-insensitive collations.
+- **Fail-Safe Deduplication Archiving:** Upgrades safely archive duplicate queue items to `{PREFIX}_peestream_queue_archive` before adding unique index `uq_post_urlhash`; any SQL error halts migration with zero data loss.
+- **Lock Lease Hardening:** Task claim checks verify active lease ownership and stop processing immediately if lease expires.
+- **Webhook Transaction Protection:** Ensured atomic compare-and-swap state management for webhook events.
+
+### Version 1.0.3
+- **Unified Manual Migration Locking:** AJAX batch processing and server cron worker are fully coordinated with concurrency locks.
+- **Multi-Server Post Atomicity:** Posts containing multiple competitor links process each server link individually and atomically.
 
 ### Version 1.0.2 (Multi-Video Integrity, Concurrency Fencing & Rollback Hardening)
 - **P0 Multi-Video Migration Integrity & Optimistic Locking:** Replaced uncoordinated article updates with `peestream_apply_post_replacement()` incorporating optimistic concurrency verification (`WHERE id = ... AND xfields = ... AND short_story = ... AND full_story = ...`) with automatic retry loop (up to 3 attempts). Multiple concurrent ready videos in the same article serialize safely without overwriting each other.

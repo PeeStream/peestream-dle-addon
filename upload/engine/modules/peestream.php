@@ -4,7 +4,7 @@
 PeeStream Video Player & Tools - DataLife Engine Addon
 Module: Frontend Template Parser
 File: engine/modules/peestream.php
-Version: 1.0.0
+Version: 1.0.4
 =============================================================================
 */
 

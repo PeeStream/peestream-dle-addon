@@ -3,7 +3,7 @@
 =============================================================================
 PeeStream Video Transcode Queue Worker - DataLife Engine Addon
 File: engine/modules/peestream_cron.php
-Version: 1.0.3
+Version: 1.0.4
 Author: PeeStream Team
 Official Website: https://peestream.com | Player: https://peeplayer.com
 =============================================================================
@@ -723,7 +723,7 @@ if( !function_exists( 'peestream_api_call' ) ) {
 		curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
 		curl_setopt( $ch, CURLOPT_CONNECTTIMEOUT, 10 );
 		curl_setopt( $ch, CURLOPT_TIMEOUT, 30 );
-		curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Cron/1.0.3' );
+		curl_setopt( $ch, CURLOPT_USERAGENT, 'PeeStream-DLE-Cron/1.0.4' );
 		curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, true );
 		
 		$resp = curl_exec( $ch );
