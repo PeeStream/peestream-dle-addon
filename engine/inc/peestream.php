@@ -115,7 +115,7 @@ if ( ! function_exists( 'peestream_claim_task' ) ) {
 		$token_set = !empty( $owner_token ) ? ", owner_token='{$safe_token}'" : "";
 		$sql = "UPDATE {$queue_table} 
 		        SET status='checking'{$token_set}, updated_at='{$now_date}' 
-		        WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR original_url='{$safe_url}') 
+		        WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR (url_hash='' AND BINARY original_url='{$safe_url}')) 
 		          AND (status IN ('pending', 'queued') OR (status='checking' AND updated_at < '{$stale_time}'))";
 		$res = $db->query( $sql, false );
 		if ( ! $res ) return false;
@@ -540,49 +540,50 @@ if ( ! function_exists( 'peestream_ensure_schema' ) ) {
 
 		// 5. Column Verification and Migration on Active Queue Table
 		$col_query = $db->query( "SHOW COLUMNS FROM {$queue_table}", false );
-		if ( $col_query ) {
-			$existing_cols = array();
-			while ( $col = $db->get_row( $col_query ) ) {
-				$existing_cols[] = $col['Field'];
+		if ( ! $col_query ) {
+			return false; // Fail closed if SHOW COLUMNS query fails
+		}
+		$existing_cols = array();
+		while ( $col = $db->get_row( $col_query ) ) {
+			$existing_cols[] = $col['Field'];
+		}
+		if ( ! in_array( 'original_url', $existing_cols, true ) ) {
+			if ( in_array( 'url', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `url` `original_url` VARCHAR(500) NOT NULL", false );
+			} else {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_url` VARCHAR(500) NOT NULL AFTER `post_id`", false );
 			}
-			if ( ! in_array( 'original_url', $existing_cols, true ) ) {
-				if ( in_array( 'url', $existing_cols, true ) ) {
-					$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `url` `original_url` VARCHAR(500) NOT NULL", false );
-				} else {
-					$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_url` VARCHAR(500) NOT NULL AFTER `post_id`", false );
-				}
+		}
+		if ( ! in_array( 'url_hash', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `url_hash` VARCHAR(64) NOT NULL DEFAULT '' AFTER `original_url`", false );
+		}
+		if ( ! in_array( 'filecode', $existing_cols, true ) ) {
+			if ( in_array( 'file_code', $existing_cols, true ) ) {
+				$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `file_code` `filecode` VARCHAR(64) NOT NULL DEFAULT ''", false );
+			} else {
+				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `filecode` VARCHAR(64) NOT NULL DEFAULT '' AFTER `url_hash`", false );
 			}
-			if ( ! in_array( 'url_hash', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `url_hash` VARCHAR(64) NOT NULL DEFAULT '' AFTER `original_url`", false );
-			}
-			if ( ! in_array( 'filecode', $existing_cols, true ) ) {
-				if ( in_array( 'file_code', $existing_cols, true ) ) {
-					$db->query( "ALTER TABLE {$queue_table} CHANGE COLUMN `file_code` `filecode` VARCHAR(64) NOT NULL DEFAULT ''", false );
-				} else {
-					$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `filecode` VARCHAR(64) NOT NULL DEFAULT '' AFTER `url_hash`", false );
-				}
-			}
-			if ( ! in_array( 'state', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `state` VARCHAR(32) NOT NULL DEFAULT 'pending' AFTER `filecode`", false );
-			}
-			if ( ! in_array( 'original_xfields', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_xfields` MEDIUMTEXT AFTER `state`", false );
-			}
-			if ( ! in_array( 'original_short', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_short` MEDIUMTEXT AFTER `original_xfields`", false );
-			}
-			if ( ! in_array( 'original_full', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_full` MEDIUMTEXT AFTER `original_short`", false );
-			}
-			if ( ! in_array( 'owner_token', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `owner_token` VARCHAR(64) NOT NULL DEFAULT '' AFTER `status`", false );
-			}
-			if ( ! in_array( 'retry_count', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `retry_count` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `owner_token`", false );
-			}
-			if ( ! in_array( 'error_msg', $existing_cols, true ) ) {
-				$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `error_msg` VARCHAR(255) NOT NULL DEFAULT '' AFTER `updated_at`", false );
-			}
+		}
+		if ( ! in_array( 'state', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `state` VARCHAR(32) NOT NULL DEFAULT 'pending' AFTER `filecode`", false );
+		}
+		if ( ! in_array( 'original_xfields', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_xfields` MEDIUMTEXT AFTER `state`", false );
+		}
+		if ( ! in_array( 'original_short', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_short` MEDIUMTEXT AFTER `original_xfields`", false );
+		}
+		if ( ! in_array( 'original_full', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `original_full` MEDIUMTEXT AFTER `original_short`", false );
+		}
+		if ( ! in_array( 'owner_token', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `owner_token` VARCHAR(64) NOT NULL DEFAULT '' AFTER `status`", false );
+		}
+		if ( ! in_array( 'retry_count', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `retry_count` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `owner_token`", false );
+		}
+		if ( ! in_array( 'error_msg', $existing_cols, true ) ) {
+			$db->query( "ALTER TABLE {$queue_table} ADD COLUMN `error_msg` VARCHAR(255) NOT NULL DEFAULT '' AFTER `updated_at`", false );
 		}
 
 		// Ensure all existing rows have valid 64-char SHA-256 url_hash
@@ -590,15 +591,18 @@ if ( ! function_exists( 'peestream_ensure_schema' ) ) {
 
 		// 6. Ensure Collision-Free, Full-Length UNIQUE KEY on (post_id, url_hash)
 		$idx_hash_q = $db->query( "SHOW INDEX FROM {$queue_table} WHERE Key_name = 'uq_post_urlhash'", false );
-		$has_uq_hash = ( $idx_hash_q && ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $idx_hash_q ) > 0 : true ) );
+		if ( ! $idx_hash_q ) {
+			return false; // Fail closed if SHOW INDEX query fails
+		}
+		$has_uq_hash = ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $idx_hash_q ) > 0 : true );
 		if ( ! $has_uq_hash ) {
-			// Check how many historical duplicates exist
+			// Check how many historical duplicates exist using strict SHA-256 identity and BINARY exact URL comparison
 			$dup_check = method_exists( $db, 'super_query' )
 				? $db->super_query( "SELECT COUNT(DISTINCT q1.id) AS cnt 
 				                     FROM {$queue_table} q1 
 				                     INNER JOIN {$queue_table} q2 
 				                     WHERE q1.id < q2.id AND q1.post_id = q2.post_id 
-				                       AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )" )
+				                       AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )" )
 				: array();
 			$expected_dups = ( !empty( $dup_check['cnt'] ) ) ? intval( $dup_check['cnt'] ) : 0;
 
@@ -610,7 +614,7 @@ if ( ! function_exists( 'peestream_ensure_schema' ) ) {
 				             SELECT q1.id, q1.post_id, q1.original_url, q1.url_hash, q1.filecode, q1.state, q1.original_xfields, q1.original_short, q1.original_full, q1.status, q1.owner_token, q1.retry_count, q1.created_at, q1.updated_at, '{$now_date}', q1.error_msg
 				             FROM {$queue_table} q1
 				             INNER JOIN {$queue_table} q2
-				             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+				             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )", false );
 
 				// Strictly verify all duplicates were successfully archived before deleting active rows
 				$arch_verify = method_exists( $db, 'super_query' )
@@ -620,7 +624,7 @@ if ( ! function_exists( 'peestream_ensure_schema' ) ) {
 					                         SELECT q1.id FROM {$queue_table} q1 
 					                         INNER JOIN {$queue_table} q2 
 					                         WHERE q1.id < q2.id AND q1.post_id = q2.post_id 
-					                           AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )
+					                           AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )
 					                     )" )
 					: array();
 				$archived_cnt = ( !empty( $arch_verify['cnt'] ) ) ? intval( $arch_verify['cnt'] ) : 0;
@@ -635,19 +639,24 @@ if ( ! function_exists( 'peestream_ensure_schema' ) ) {
 					// Remove duplicate older entries from active queue ONLY AFTER verified archive
 					$db->query( "DELETE q1 FROM {$queue_table} q1
 					             INNER JOIN {$queue_table} q2
-					             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+					             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )", false );
 				}
 
 				// Drop prefix-truncated legacy index if present
 				$db->query( "ALTER TABLE {$queue_table} DROP INDEX uq_post_orig", false );
 				// Add full 256-bit binary-safe unique key
 				$db->query( "ALTER TABLE {$queue_table} ADD UNIQUE KEY uq_post_urlhash (post_id, url_hash)", false );
+			} else {
+				return false; // Archiving duplicates failed: cannot safely proceed to unique key creation
 			}
 		}
 
 		// 7. Ensure UNIQUE KEY on Webhooks table
 		$idx_q = $db->query( "SHOW INDEX FROM {$audit_table} WHERE Key_name = 'uq_fc_event'", false );
-		$has_unique_webhook_idx = ( $idx_q && ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $idx_q ) > 0 : true ) );
+		if ( ! $idx_q ) {
+			return false; // Fail closed if SHOW INDEX query fails
+		}
+		$has_unique_webhook_idx = ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $idx_q ) > 0 : true );
 		if ( ! $has_unique_webhook_idx ) {
 			$db->query( "DELETE w1 FROM {$audit_table} w1 INNER JOIN {$audit_table} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event", false );
 			$db->query( "ALTER TABLE {$audit_table} ADD UNIQUE KEY uq_fc_event (file_code, event)", false );
@@ -655,11 +664,12 @@ if ( ! function_exists( 'peestream_ensure_schema' ) ) {
 
 		// 8. Strict Schema Verification: Verify all mandatory columns and UNIQUE indexes exist before declaring success
 		$verif_cols_q = $db->query( "SHOW COLUMNS FROM {$queue_table}", false );
+		if ( ! $verif_cols_q ) {
+			return false; // Fail closed if SHOW COLUMNS verification query fails
+		}
 		$final_cols = array();
-		if ( $verif_cols_q ) {
-			while( $c = $db->get_row( $verif_cols_q ) ) {
-				$final_cols[] = $c['Field'];
-			}
+		while( $c = $db->get_row( $verif_cols_q ) ) {
+			$final_cols[] = $c['Field'];
 		}
 		if ( ! empty( $final_cols ) ) {
 			$required_cols = array( 'original_url', 'url_hash', 'filecode', 'owner_token', 'retry_count' );
@@ -671,8 +681,11 @@ if ( ! function_exists( 'peestream_ensure_schema' ) ) {
 		}
 
 		$verif_idx_q = $db->query( "SHOW INDEX FROM {$queue_table} WHERE Key_name = 'uq_post_urlhash'", false );
-		$has_final_uq = ( $verif_idx_q && ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $verif_idx_q ) > 0 : true ) );
-		if ( $verif_idx_q && ! $has_final_uq && method_exists( $db, 'num_rows' ) ) {
+		if ( ! $verif_idx_q ) {
+			return false; // Fail closed if SHOW INDEX verification query fails
+		}
+		$has_final_uq = ( method_exists( $db, 'num_rows' ) ? $db->num_rows( $verif_idx_q ) > 0 : true );
+		if ( ! $has_final_uq ) {
 			return false; // Mandatory unique key missing
 		}
 
@@ -685,8 +698,19 @@ $backup_table = PREFIX . "_peestream_backups";
 $queue_table  = PREFIX . "_peestream_queue";
 $audit_table  = PREFIX . "_peestream_webhooks";
 
-// Ensure schema is fully migrated and recover any interrupted jobs
-peestream_ensure_schema( $db );
+// Ensure schema is fully migrated and fail-closed if verification fails
+if ( ! peestream_ensure_schema( $db ) ) {
+	if ( isset( $_REQUEST['action'] ) && ! empty( $_REQUEST['action'] ) ) {
+		header( 'Content-Type: application/json; charset=utf-8' );
+		echo json_encode( array( 'success' => false, 'error' => 'Database schema verification failed. Operation aborted.' ) );
+		exit;
+	} else {
+		if ( function_exists( 'msg' ) ) {
+			msg( "error", "PeeStream Error", "PeeStream database schema verification failed. Please verify database permissions and tables." );
+		}
+		return;
+	}
+}
 peestream_recover_interrupted_tasks( $db, $cfg );
 
 $action = isset( $_REQUEST['action'] ) ? trim( $_REQUEST['action'] ) : '';
@@ -1188,9 +1212,29 @@ if( $action === 'migrator_rollback' ) {
 				}
 			}
 
+			// Check if original URL is actually present in post
+			$has_orig_in_post = ( strpos( $curr['short_story'], $orig_url ) !== false || strpos( $curr['full_story'], $orig_url ) !== false );
+			if( ! $has_orig_in_post && ! empty( $curr_xf_arr ) ) {
+				foreach ( $curr_xf_arr as $cur_v ) {
+					if ( strpos( (string)$cur_v, $orig_url ) !== false ) {
+						$has_orig_in_post = true;
+						break;
+					}
+				}
+			}
+			if( ! $has_orig_in_post && strpos( $curr['xfields'], $orig_url ) !== false ) {
+				$has_orig_in_post = true;
+			}
+
 			if( ! $has_peestream_embed && ! $has_peestream_xf ) {
-				$db->query( "UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'" );
-				return true;
+				// PeeStream embed/field is not present in post.
+				// Do NOT falsely declare success if original link is also missing!
+				if ( $has_orig_in_post ) {
+					$db->query( "UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'" );
+					return true;
+				}
+				// Original link is neither present nor restored: report conflict
+				return false;
 			}
 
 			// SURGICAL REVERSION: Revert exclusively this video's field and embed
@@ -1230,8 +1274,15 @@ if( $action === 'migrator_rollback' ) {
 			$aff = peestream_get_affected_rows( $db );
 
 			if( $upd_res && $aff > 0 ) {
-				$db->query( "UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'" );
-				return true;
+				// Verify that original link is indeed present/restored in post after update
+				$verify_curr = $db->super_query( "SELECT xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'" );
+				$verified_orig = ( strpos( $verify_curr['short_story'], $orig_url ) !== false || 
+				                   strpos( $verify_curr['full_story'], $orig_url ) !== false || 
+				                   strpos( $verify_curr['xfields'], $orig_url ) !== false );
+				if ( $verified_orig ) {
+					$db->query( "UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'" );
+					return true;
+				}
 			}
 
 			usleep( 10000 );

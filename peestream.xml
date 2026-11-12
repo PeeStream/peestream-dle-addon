@@ -292,7 +292,7 @@ if( isset( $db ) ) {
 		                                 FROM {$queue_t} q1 
 		                                 INNER JOIN {$queue_t} q2 
 		                                 WHERE q1.id < q2.id AND q1.post_id = q2.post_id 
-		                                   AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )" );
+		                                   AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )" );
 		$expected_dups = ( !empty( $dup_check['cnt'] ) ) ? intval( $dup_check['cnt'] ) : 0;
 
 		$archive_ok = true;
@@ -302,7 +302,7 @@ if( isset( $db ) ) {
 			                        SELECT q1.id, q1.post_id, q1.original_url, q1.url_hash, q1.filecode, q1.state, q1.original_xfields, q1.original_short, q1.original_full, q1.status, q1.owner_token, q1.retry_count, q1.created_at, q1.updated_at, '{$now_date}', q1.error_msg
 			                        FROM {$queue_t} q1
 			                        INNER JOIN {$queue_t} q2
-			                        WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+			                        WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )", false );
 
 			$arch_verify = $db->super_query( "SELECT COUNT(DISTINCT original_queue_id) AS cnt 
 			                                   FROM {$archive_t} 
@@ -310,7 +310,7 @@ if( isset( $db ) ) {
 			                                       SELECT q1.id FROM {$queue_t} q1 
 			                                       INNER JOIN {$queue_t} q2 
 			                                       WHERE q1.id < q2.id AND q1.post_id = q2.post_id 
-			                                         AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )
+			                                         AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )
 			                                   )" );
 			$archived_cnt = ( !empty( $arch_verify['cnt'] ) ) ? intval( $arch_verify['cnt'] ) : 0;
 			if( ! $ins_res || $archived_cnt < $expected_dups ) {
@@ -322,7 +322,7 @@ if( isset( $db ) ) {
 			if( $expected_dups > 0 ) {
 				$db->query( "DELETE q1 FROM {$queue_t} q1
 				             INNER JOIN {$queue_t} q2
-				             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q1.url_hash = q2.url_hash) OR q1.original_url = q2.original_url )", false );
+				             WHERE q1.id < q2.id AND q1.post_id = q2.post_id AND ( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )", false );
 			}
 			$db->query( "ALTER TABLE {$queue_t} DROP INDEX uq_post_orig", false );
 			$db->query( "ALTER TABLE {$queue_t} ADD UNIQUE KEY uq_post_urlhash (post_id, url_hash)", false );
