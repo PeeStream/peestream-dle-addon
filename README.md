@@ -1,13 +1,17 @@
 # PeeStream Video Player, Inserter & Safe Auto-Migrator for DataLife Engine (DLE)
 
-Official, production-ready DataLife Engine addon for **PeeStream** (`https://peestream.com` / `https://peeplayer.com`). Seamlessly embed high-performance HLS video streams, upload remote videos directly from your article editor, synchronize TV episodes automatically via webhooks, and safely migrate links from failing third-party hosters.
+Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `https://peeplayer.com`). Seamlessly embed high-performance HLS video streams, upload remote videos directly from your article editor, synchronize TV episodes automatically via webhooks, and safely migrate links from failing third-party hosters.
+
+> [!WARNING]
+> **BETA RELEASE (v1.0.4-beta.1) — NOT PRODUCTION TESTED**
+> Compatibility across DLE 13.0–17.3+ is expected based on architecture review, DLE manifest specification, and extensive automated harness simulations (255 tests passed). Live CMS End-to-End runtime testing on an active DLE installation has **NOT BEEN RUN**. Installation is recommended exclusively on staging/testing sites. Always make a full database backup before running migrations. Please report any issues along with your CMS, PHP, and database versions.
 
 ---
 
 ## Technical Specifications & Requirements
 
-- **Supported DLE Versions:** 13.0, 13.1, 13.2, 13.3, 14.0, 14.1, 14.2, 14.3, 15.0, 15.1, 15.2, 16.0, 16.1, 17.0, 17.1, 17.2, 17.3+
-- **PHP Compatibility:** PHP 7.4, 8.0, 8.1, 8.2, 8.3
+- **Target DLE Versions:** 13.0 and newer (expected compatibility based on manifest specification and code review; Live CMS E2E: NOT RUN)
+- **PHP Compatibility:** PHP 7.4 through 8.3 (syntax lint verified on lsphp72 through lsphp83)
 - **PHP Extensions:** `curl`, `json`, `mbstring`
 - **Database:** MySQL 5.7+ / MariaDB 10.3+ (InnoDB, UTF-8/UTF8MB4)
 - **Security Features:** CSRF protection, DOM textContent XSS immunity, Rate limiting (60 req/min), Replay attack protection, Pre-migration DB backups, Atomic 1-click rollback
@@ -236,7 +240,7 @@ Example usage in `fullstory.tpl`:
 - **P1 Persistent Transcode Queue:** Added persistent `{PREFIX}_peestream_queue` table with "Check Pending Encodings" background queue manager for async processing.
 - **P1 Hosters:** Cleaned hoster list to strictly confirmed endpoints (MixDrop, Streamtape, VOE, StreamWish, EarnVids, PixelDrain).
 - **P2 Pre-Migration Duplicate Deduplication:** Cleans historical duplicate webhook rows before adding `UNIQUE KEY uq_fc_event` to eliminate MySQL 1062 errors on upgrades.
-- **P2 Packaging & Full GPLv2:** Added full GNU GPLv2 license file and clean root ZIP archive structure without `upload/` prefix. Tested on DLE 13.0 through 17.3+ and PHP 7.4 through 8.3.
+- **P2 Packaging & Full GPLv2:** Added full GNU GPLv2 license file and clean root ZIP archive structure without `upload/` prefix. Code and manifest reviewed for DLE 13.0 through 17.3+ and verified on PHP 7.4 through 8.3 via automated harness (Live CMS E2E: NOT RUN).
 
 ---
 
