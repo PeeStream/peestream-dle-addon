@@ -1368,6 +1368,9 @@ if( $action === 'migrator_rollback' ) {
 // POST: Save settings
 // -------------------------------------------------------------
 $msg_alert = '';
+if( !empty( $config['version_id'] ) && version_compare( (string)$config['version_id'], '17.3', '>' ) ) {
+	$msg_alert .= '<div class="alert alert-info alert-styled-left alert-arrow-left alert-bordered" style="margin-bottom:15px;"><b>Notice:</b> DataLife Engine ' . htmlspecialchars( (string)$config['version_id'], ENT_QUOTES, 'UTF-8' ) . ' is newer than the highest officially verified release (17.3). PeeStream is operating in backward-compatible mode.</div>';
+}
 if( $action === 'save' ) {
 	if( empty( $_REQUEST['user_hash'] ) || !hash_equals( (string)$dle_login_hash, (string)$_REQUEST['user_hash'] ) ) {
 		die( "Hacking attempt! Invalid security token." );
