@@ -348,13 +348,13 @@ if ( ! function_exists( 'peestream_recover_interrupted_tasks' ) ) {
 				// Article modification actually completed before process was interrupted!
 				$db->query( "UPDATE {$backup_table} SET status='completed' WHERE id='{$b['id']}'", false );
 				// Only update queue task if it is either unowned or stale: do NOT overwrite active worker lease!
-				$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', owner_token='', updated_at='{$now_date}' WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR original_url='{$safe_orig_url}') AND (owner_token='' OR updated_at < '{$cutoff}')", false );
+				$db->query( "UPDATE {$queue_table} SET state='ready', status='completed', owner_token='', updated_at='{$now_date}' WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR (url_hash='' AND BINARY original_url='{$safe_orig_url}')) AND (owner_token='' OR updated_at < '{$cutoff}')", false );
 				$recovered_count++;
 			} else {
 				// Article modification was interrupted or failed before save: mark backup as apply_failed and queue as pending for safe retry
 				$db->query( "UPDATE {$backup_table} SET status='apply_failed' WHERE id='{$b['id']}'", false );
 				// Only update queue task if it is either unowned or stale: do NOT overwrite active worker lease!
-				$db->query( "UPDATE {$queue_table} SET status='pending', state='pending', owner_token='', error_msg='Recovered from interrupted partial update', updated_at='{$now_date}' WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR original_url='{$safe_orig_url}') AND (owner_token='' OR updated_at < '{$cutoff}')", false );
+				$db->query( "UPDATE {$queue_table} SET status='pending', state='pending', owner_token='', error_msg='Recovered from interrupted partial update', updated_at='{$now_date}' WHERE post_id='{$pid}' AND (url_hash='{$url_hash}' OR (url_hash='' AND BINARY original_url='{$safe_orig_url}')) AND (owner_token='' OR updated_at < '{$cutoff}')", false );
 				$recovered_count++;
 			}
 		}
@@ -828,7 +828,7 @@ if( $action === 'migrator_process_one' ) {
 	$safe_token = $db->safesql( $owner_token );
 	
 	// Check if already in persistent queue by post_id and url_hash (binary-safe)
-	$q_item = $db->super_query( "SELECT * FROM {$queue_table} WHERE post_id='{$post_id}' AND (url_hash='{$url_hash}' OR original_url='{$safe_old_url}') LIMIT 1" );
+	$q_item = $db->super_query( "SELECT * FROM {$queue_table} WHERE post_id='{$post_id}' AND (url_hash='{$url_hash}' OR (url_hash='' AND BINARY original_url='{$safe_old_url}')) LIMIT 1" );
 	
 	$new_code = '';
 	$is_ready = false;
