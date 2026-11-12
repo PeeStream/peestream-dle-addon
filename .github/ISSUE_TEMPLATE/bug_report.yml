@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible issue with the PeeStream DataLife Engine addon.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "Live DLE E2E has not been performed. Use staging only. Do not share credentials, tokens, or private server information."
+  - type: input
+    id: version
+    attributes:
+      label: PeeStream addon version
+      placeholder: "1.0.4-beta.1"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: DLE, PHP, and database versions
+      placeholder: "DLE 17.x; PHP 8.2; MariaDB 10.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Environment
+      options:
+        - Staging / local
+        - Production (not recommended for beta)
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized logs
+      description: Never include webhook or cron secrets, API tokens, or server addresses.
+    validations:
+      required: true

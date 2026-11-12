@@ -1,6 +1,16 @@
-# PeeStream Video Player, Inserter & Safe Auto-Migrator for DataLife Engine (DLE)
+<p align="center">
+  <a href="https://peestream.com"><img src="engine/skins/images/peestream.png" alt="PeeStream logo" width="96"></a>
+</p>
+<h1 align="center">PeeStream for DataLife Engine</h1>
+<p align="center"><strong>Video player integration, editor tools, and controlled video-link migration for DLE publishers.</strong></p>
+<p align="center">
+  <a href="https://peestream.com">PeeStream</a> ·
+  <a href="https://github.com/PeeStream/peestream-dle-addon/releases">Releases</a> ·
+  <a href="https://github.com/PeeStream/peestream-dle-addon/issues">Report an issue</a>
+</p>
+<p align="center"><strong>v1.0.4-beta.1 planned</strong> · <strong>Staging only</strong> · <strong>Live CMS E2E: NOT RUN</strong></p>
 
-Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `https://peeplayer.com`). Seamlessly embed high-performance HLS video streams, upload remote videos directly from your article editor, synchronize TV episodes automatically via webhooks, and safely migrate links from failing third-party hosters.
+This official PeeStream addon provides an article-editor integration and migration tools for DataLife Engine. Compatibility is still **unverified on a running DLE installation**.
 
 > [!WARNING]
 > **BETA RELEASE (v1.0.4-beta.1) — NOT PRODUCTION TESTED**
@@ -60,7 +70,7 @@ Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `htt
 ## Installation Guide
 
 ### Method A: DLE Plugin Manager (Recommended)
-1. Download `dle_peestream_v1.0.4.zip` (or Release Candidate `dle_peestream_v1.0.4-RC.zip`) and extract the files.
+1. When published, download `dle_peestream_v1.0.4-beta.1.zip` from the [GitHub Releases page](https://github.com/PeeStream/peestream-dle-addon/releases), and extract it in an isolated staging environment only.
 2. In your DLE Administration Panel, navigate to **Plugin Management** (`?mod=plugins`).
 3. Click **Upload Plugin** and select `peestream.xml`.
 4. Upload the `engine/` and `language/` directories to your server root (if not automatically extracted).
@@ -205,7 +215,7 @@ Example usage in `fullstory.tpl`:
 
 ## Changelog
 
-### Version 1.0.4
+### Version 1.0.4 (beta; not tested on a live DLE installation)
 - **Binary-Safe Case-Sensitive URL Deduplication:** Enforced SHA-256 identity (`url_hash`) and `BINARY original_url` comparison in database migration deduplication and queue reservation, preventing case-sensitive video URLs from colliding on case-insensitive collations.
 - **Fail-Safe Deduplication Archiving:** Upgrades safely archive duplicate queue items to `{PREFIX}_peestream_queue_archive` before adding unique index `uq_post_urlhash`; any SQL error halts migration with zero data loss.
 - **Lock Lease Hardening:** Task claim checks verify active lease ownership and stop processing immediately if lease expires.
