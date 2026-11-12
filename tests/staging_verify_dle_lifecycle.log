@@ -1,0 +1,46 @@
+=========================================================
+DLE STAGING LIFECYCLE & SECRET PERSISTENCE VERIFICATION
+=========================================================
+
+--- 1. Testing Clean Installation (no peestream.conf.php) ---
+ [PASS] peestream.conf.php initially does not exist
+ [PASS] peestream.xml contains non-empty phpinstall block
+ [PASS] phpinstall created peestream.conf.php on disk
+ [PASS] peestream.conf.php has secure permissions 0644
+ [PASS] peestream_config array is created
+ [PASS] webhook_secret is generated with 48 hex chars
+ [PASS] cron_secret is generated with 48 hex chars
+ [PASS] cron_secret is strictly different from webhook_secret
+ [PASS] Default player_domain is https://peeplayer.com
+ [PASS] Default api_domain is https://peestream.com
+ [PASS] Default auto_create_news is disabled (0)
+
+--- 2. Testing Persistence Across Fresh Process Boot ---
+ [PASS] Fresh process loads peestream.conf.php cleanly
+ [PASS] Loaded webhook_secret matches initial secret exactly
+ [PASS] Loaded cron_secret matches initial secret exactly
+ [PASS] Secrets remained 100% persistent on disk without rotation
+
+--- 3. Testing Admin Settings Modification & Secret Preservation ---
+ [PASS] Admin settings saved successfully
+ [PASS] Custom player domain preserved
+ [PASS] Webhook secret preserved after settings save
+ [PASS] Cron secret preserved after settings save
+
+--- 4. Testing Upgrade (<phpupgrade>) Secret Preservation ---
+ [PASS] peestream.xml contains non-empty phpupgrade block
+ [PASS] Upgrade preserves existing user API key
+ [PASS] Upgrade preserves existing custom player domain
+ [PASS] Upgrade preserves existing webhook secret
+ [PASS] Upgrade preserves existing cron secret
+
+--- 5. Testing Upgrade Rotation of Weak/Compromised Secrets ---
+ [PASS] Upgrade rotates compromised placeholder webhook secret
+ [PASS] Rotated webhook secret is valid 48 hex chars
+ [PASS] Upgrade rotates short cron secret
+ [PASS] Rotated cron secret is valid 48 hex chars
+ [PASS] Rotated cron secret is different from rotated webhook secret
+
+=========================================================
+STAGING LIFECYCLE RESULTS: Total: 29 | Passed: 29 | Failed: 0
+=========================================================
