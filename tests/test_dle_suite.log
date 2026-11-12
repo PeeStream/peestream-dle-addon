@@ -1,0 +1,288 @@
+=========================================================
+PEESTREAM DLE ADDON v1.0.4 - AUTOMATED TEST SUITE
+=========================================================
+
+
+--- 1. Testing PHP Syntax & Lint ---
+ [PASS] PHP Lint: peestream.php
+ [PASS] PHP Lint: peestream.php
+ [PASS] PHP Lint: peestream_cron.php
+ [PASS] PHP Lint: peestream_modal.php
+ [PASS] PHP Lint: peestream_webhook.php
+ [PASS] PHP Lint: peestream.conf.php
+ [PASS] PHP Lint: peestream.lng
+ [PASS] PHP Lint: peestream.lng
+ [PASS] PHP Lint: peestream.lng
+
+--- 2. Testing XML Manifest Structure & Compatibility ---
+ [PASS] XML loads cleanly
+ [PASS] XML version is 1.0.4
+ [PASS] XML dleversion is 13.0-17.3
+ [PASS] XML contains mysqlinstall table schemas
+ [PASS] XML contains options.php hook
+ [PASS] XML contains show.full.php hook
+ [PASS] XML contains show.short.php hook
+ [PASS] XML contains addnews/editnews hooks
+
+--- 3. Testing Hosters Whitelist & Pattern Matching ---
+ [PASS] Streamtape is supported
+ [PASS] MixDrop is supported
+ [PASS] VOE is supported
+ [PASS] StreamWish is supported
+ [PASS] EarnVids is supported
+ [PASS] PixelDrain is supported
+ [PASS] Doodstream is EXCLUDED (not verified)
+ [PASS] Filemoon is EXCLUDED (not verified)
+ [PASS] Find competitors detects 3 links
+
+--- 4. Testing Multi-link Post Safety (Non-destructive replacement) ---
+ [PASS] Target link replaced
+ [PASS] Trailer YouTube link untouched
+ [PASS] Secondary server untouched
+
+--- 5. Testing Template Parser & BBCode Tags ---
+ [PASS] Code cleaner extracts code from embed URL
+ [PASS] Code cleaner extracts code from video URL
+ [PASS] Code cleaner validates raw alphanumeric code
+ [PASS] Code cleaner rejects malicious input
+ [PASS] Player render contains responsive container
+ [PASS] Player render contains correct iframe URL
+ [PASS] Player render includes allowfullscreen attributes
+
+--- 6. Testing Webhook Security Invariants ---
+ [PASS] Webhook enforces POST-only method
+ [PASS] Webhook rejects secret < 16 chars
+ [PASS] Webhook uses constant-time hash_equals
+ [PASS] Webhook includes rate limiting check
+ [PASS] Webhook checks replay protection index
+ [PASS] Webhook strictly uses IMDb ID regex
+ [PASS] Webhook does NOT contain dangerous LIKE title fallback
+
+--- 7. Testing Modal XSS & CSRF Invariants ---
+ [PASS] Modal enforces CSRF user_hash check on all POST actions
+ [PASS] Modal uses official /api/file/list endpoint
+ [PASS] Modal uses pstEscapeHtml safe escaping
+ [PASS] Modal creates DOM elements via textContent (no raw HTML injection)
+
+--- 8. Testing ZIP Package Integrity & Clean Paths ---
+ [PASS] ZIP archive exists
+ [PASS] ZIP archive opens cleanly
+ [PASS] ZIP contains peestream.xml in root
+ [PASS] ZIP has clean root structure WITHOUT 'upload/' prefix
+ [PASS] ZIP contains engine/inc/peestream.php
+ [PASS] ZIP contains language/English/peestream.lng
+
+--- 9. Testing Migrator Queue & canplay=1 Requirement ---
+ [PASS] Migrator creates peestream_queue table schema
+ [PASS] Migrator defines peestream_extract_file_info helper
+ [PASS] Migrator queries api/file/info for canplay status
+ [PASS] Migrator strictly verifies canplay === 1 using peestream_extract_file_info
+ [PASS] Migrator leaves original post untouched if processing
+ [PASS] Migrator includes migrator_check_queue action
+
+--- 10. Testing Strict IMDb xfieldsdataload & Ambiguity 409 Handling ---
+ [PASS] Webhook whitelists events (video_ready, new_episode_ready, movie_ready)
+ [PASS] Webhook defines UNIQUE KEY uq_fc_event on webhooks table
+ [PASS] Webhook performs atomic reservation before modifying post
+ [PASS] Webhook uses xfieldsdataload() to unpack custom fields
+ [PASS] Webhook restricts IMDb check to identifier fields (imdb, imdb_id)
+ [PASS] Webhook rejects ambiguous matches (>1 post) with 409 Conflict
+
+--- 11. Testing Surgical Rollback (Editorial Preservation) ---
+ [PASS] Rollback performs surgical string replacement on exact embed URL rather than raw code
+ [PASS] Rollback verifies post exists before attempting restoration
+ [PASS] Surgical rollback restored original video link
+ [PASS] Surgical rollback preserved breaking update added later
+ [PASS] Surgical rollback preserved new editorial footer
+
+--- 12. Testing Secret Auto-Initialization & Crypto Security ---
+ [PASS] XML phpinstall checks and auto-initializes secret if empty or < 16 chars
+ [PASS] Admin backend auto-generates 48-hex secret on load if missing
+ [PASS] JS secret generator uses window.crypto.getRandomValues
+ [PASS] JS secret generator does NOT use Math.random fallback
+ [PASS] JS migrator log uses textContent/createTextNode instead of innerHTML
+ [PASS] Editor modal error display uses textContent
+ [PASS] Config template peestream.conf.php has EMPTY webhook_secret
+
+--- 13. Testing Full GNU GPLv2 License Text ---
+ [PASS] LICENSE file contains GNU GENERAL PUBLIC LICENSE Version 2
+ [PASS] LICENSE file contains full terms (TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION)
+ [PASS] LICENSE is complete (> 10,000 bytes)
+
+--- 14. Testing Reviewer Functional Scenarios ---
+ [PASS] peestream_extract_file_info parses array result correctly
+ [PASS] peestream_extract_file_info verifies canplay === 1
+ [PASS] Canonical queue schema defines original_url
+ [PASS] Canonical queue schema defines filecode
+ [PASS] Canonical queue schema defines state
+ [PASS] Canonical queue schema defines original_xfields
+ [PASS] Canonical queue schema defines original_short
+ [PASS] Canonical queue schema defines original_full
+ [PASS] XML phpupgrade contains ALTER TABLE queue column migrations
+ [PASS] XML phpupgrade contains ALTER TABLE webhook UNIQUE KEY migration
+ [PASS] IMDb matcher accepts verified identifier field (imdb)
+ [PASS] IMDb matcher rejects general text field containing IMDb string
+ [PASS] Ambiguity detection flags duplicate IMDb matches (>1 post)
+
+--- 15. Testing Reviewer Hardening Blocker Invariants ---
+ [PASS] Webhook uses atomic CAS for timed-out processing takeover
+ [PASS] Webhook checks affected rows on CAS takeover
+ [PASS] Webhook enforces fail-closed guard when lock cannot be acquired
+ [PASS] Webhook updates audit status to 'failed' on post update error
+ [PASS] Webhook updates audit status to 'failed' on post insert error
+ [PASS] peestream_extract_file_info returns FALSE on code mismatch (no data[0] fallback)
+ [PASS] Runtime migration includes pre-UNIQUE deduplication cleanup
+ [PASS] XML phpupgrade includes pre-UNIQUE deduplication cleanup
+ [PASS] migrator_scan iterates through all unmigrated URLs per post
+ [PASS] migrator_scan deduplicates duplicate URLs within the same post
+ [PASS] migrator_process_one verifies original_url exists before updating post
+ [PASS] migrator_process_one sets queue status to 'conflict'
+ [PASS] migrator_check_queue verifies original_url exists and flags conflict
+ [PASS] Cron worker file exists
+ [PASS] Cron worker contains concurrency flock locking
+ [PASS] Cron worker enforces HTTP cron_secret authentication
+ [PASS] Cron worker checks editor conflict
+ [PASS] XML filelist includes peestream_cron.php
+
+--- 16. Testing P0 Unified Atomic Task Claiming & Backup Safety ---
+ [PASS] peestream_get_affected_rows exists in peestream.php
+ [PASS] peestream_claim_queue_item helper exists in peestream.php
+ [PASS] peestream_claim_task helper exists in peestream.php
+ [PASS] peestream_release_task helper exists in peestream.php
+ [PASS] Worker 1 acquires atomic task claim successfully
+ [PASS] Worker 2 is strictly rejected from claiming active task (affected_rows = 0)
+ [PASS] Pre-migration backup failure halts pipeline (insert_id <= 0)
+ [PASS] Post is NOT modified when backup fails (100% data preservation)
+ [PASS] peestream_apply_post_replacement checks backup insert_id > 0 before updating post
+ [PASS] peestream_apply_post_replacement in cron checks backup insert_id > 0
+ [PASS] migrator_process_one delegates replacement to peestream_apply_post_replacement
+ [PASS] migrator_check_queue delegates replacement to peestream_apply_post_replacement
+ [PASS] peestream_apply_post_replacement verifies optimistic update affected rows
+ [PASS] peestream_apply_post_replacement in cron verifies optimistic update affected rows
+ [PASS] peestream_cron.php delegates replacement to peestream_apply_post_replacement
+
+--- 17. Testing P1 Security, Standalone Cron Isolation & Rollback ---
+ [PASS] Webhook peestream_get_affected_rows returns 0 when undetermined (fail-closed)
+ [PASS] Webhook does NOT fallback to returning 1 for affected rows
+ [PASS] Webhook runtime execution does NOT contain DELETE query
+ [PASS] Cron enforces POST method for HTTP invocation
+ [PASS] Cron returns 405 Method Not Allowed on non-POST HTTP request
+ [PASS] Cron requires separate cron_secret (not empty)
+ [PASS] Cron rejects secret reuse (cron_secret matching webhook_secret)
+ [PASS] Cron loads DLE dbconfig.php, mysql.php, and config.php
+ [PASS] Cron initializes xfieldsdataload and xfieldsdatasave
+ [PASS] Cron clears DLE cache after post modifications
+ [PASS] migrator_scan supports page and limit parameters
+ [PASS] migrator_scan returns page and has_more JSON flags
+ [PASS] migrator_rollback supports rollback by backup_id
+ [PASS] migrator_rollback verifies backup record before restoring
+
+--- 18. Testing v1.0.2 Advanced Concurrency, Idempotency & Rollback Integrity ---
+ [PASS] Worker 1 succeeds in optimistic post replacement
+ [PASS] Worker 1 replaced streamtape field with pstTape123
+ [PASS] Worker 1 assigned empty primary player peestream to pstTape123
+ [PASS] Worker 1 left mixdrop field untouched
+ [PASS] Worker 2 succeeds in serialized optimistic replacement with retry
+ [PASS] Both videos migrated: streamtape has pstTape123
+ [PASS] Both videos migrated: mixdrop has pstMix456
+ [PASS] Primary player peestream remains pstTape123 (NOT clobbered by worker 2)
+ [PASS] Targeted migration succeeds
+ [PASS] Targeted field 'trailer' updated to new code
+ [PASS] Existing primary player 'peestream' strictly preserved
+ [PASS] First task pre-reservation succeeds
+ [PASS] Second concurrent task pre-reservation for same (post_id, original_url) strictly rejected by UNIQUE constraint
+ [PASS] Fencing: Imposter worker cannot release task owned by active worker
+ [PASS] Fencing: Legitimate owner worker releases task successfully
+ [PASS] Rollback restored player1 to original Streamtape URL
+ [PASS] Rollback preserved migrated player2 (pstCodeB) completely untouched
+ [PASS] Webhook CAS query permits retry for 'ambiguous' status
+ [PASS] Webhook CAS query permits retry for 'ignored_no_match' status
+ [PASS] Webhook checks existing article before inserting new post
+ [PASS] Webhook checks file_code in xfields to prevent duplicate posts
+ [PASS] peestream.php wraps duplicate webhook cleanup in has_unique_webhook_idx check
+ [PASS] peestream.xml defines uq_post_urlhash on peestream_queue in mysqlinstall
+ [PASS] peestream.xml defines uq_post_urlhash on peestream_queue in mysqlupgrade
+ [PASS] peestream.xml defines url_hash and retry_count in mysqlinstall
+ [PASS] peestream.xml defines url_hash and retry_count in mysqlupgrade
+ [PASS] peestream.xml defines peestream_queue_archive table in mysqlinstall
+ [PASS] peestream.xml defines peestream_queue_archive table in mysqlupgrade
+ [PASS] peestream.xml defines owner_token in mysqlinstall
+ [PASS] peestream.xml defines owner_token in mysqlupgrade
+
+--- 11. Testing All 9 Reviewer Scenarios for v1.0.3 ---
+ [PASS] Scenario 1: Selected video server2 reverted to original MixDrop link
+ [PASS] Scenario 1: Server 1 remains PeeStream pstCode1 untouched
+ [PASS] Scenario 1: Server 3 remains PeeStream pstCode3 untouched
+ [PASS] Scenario 1: Story embed for server2 replaced without touching server1/server3
+ [PASS] Scenario 2: Failed rollback returns false after 3 conflict attempts
+ [PASS] Scenario 2: Backup record preserved as completed (not marked rolled_back on failure)
+ [PASS] Scenario 3: Stale worker fencing rejects update (affected_rows = 0)
+ [PASS] Scenario 4: First upload pre-reservation succeeds
+ [PASS] Scenario 4: Concurrent upload of same URL blocked by UNIQUE (post_id, url_hash)
+ [PASS] Scenario 5: Long URL (>191 chars) hash length is exactly 64 chars
+ [PASS] Scenario 5: Case-sensitive URLs produce distinct SHA-256 hashes without collision
+ [PASS] Scenario 6: First retry allowed when retry_count = 0
+ [PASS] Scenario 6: Second retry allowed when retry_count = 1
+ [PASS] Scenario 6: Third retry transitions to terminal failed when retry_count reaches 3
+ [PASS] Scenario 6: Further retry strictly rejected once retry_count >= 3
+ [PASS] Scenario 7: Schema migration creates peestream_queue_archive table
+ [PASS] Scenario 7: Schema migration adds url_hash and retry_count columns
+ [PASS] Scenario 7: Schema migration drops legacy uq_post_orig index
+ [PASS] Scenario 7: Schema migration adds uq_post_urlhash UNIQUE KEY
+ [PASS] Scenario 8: Crash recovery detects interrupted task with post already updated
+ [PASS] Scenario 8: Crash recovery promoted in_progress backup to completed
+ [PASS] Scenario 8: Crash recovery set queue status to completed
+ [PASS] Scenario 9: XML mysqlinstall defines utf8mb4 and InnoDB for all tables
+ [PASS] Scenario 9: XML mysqlupgrade defines utf8mb4 and InnoDB for all tables
+ [PASS] Scenario 9: Admin module triggers peestream_ensure_schema and peestream_recover_interrupted_tasks at boot
+ [PASS] Scenario 9: Cron module triggers peestream_ensure_schema and peestream_recover_interrupted_tasks at boot
+
+--- 12. Testing Reviewer Final Hardening (P0 Rollback Isolation, Recovery Proof & Schema Fencing) ---
+ [PASS] Rollback Isolation: Article A (post 101) restored to original link
+ [PASS] Rollback Isolation: Article A backup record marked rolled_back
+ [PASS] Rollback Isolation: Article B (post 102) strictly UNCHANGED (still pstCodeB)
+ [PASS] Rollback Isolation: Article B backup record remains completed
+ [PASS] Rollback Isolation: Article C (post 103) strictly UNCHANGED (still pstCodeC)
+ [PASS] Rollback Isolation: Article C backup record remains completed
+ [PASS] migrator_rollback has isolated backup_id branch terminating with exit
+ [PASS] migrator_rollback has isolated post_id branch terminating with exit
+ [PASS] migrator_rollback requires explicit all/rollback_all flag for global rollback
+ [PASS] migrator_rollback rejects requests without target (default branch)
+ [PASS] migrator_rollback reports partial failure count instead of false complete success
+ [PASS] mgrRollbackAll JS helper appends all=1 confirmation flag
+ [PASS] Multi-video Recovery: Unfinished video is NOT marked completed (status = apply_failed)
+ [PASS] Multi-video Recovery: Unfinished video queue item reset to pending for retry
+ [PASS] Multi-video Recovery: Proven video migration marked completed
+ [PASS] Recovery enforces worker lease fencing in WHERE clause in peestream.php
+ [PASS] Recovery enforces worker lease fencing in WHERE clause in peestream_cron.php
+ [PASS] Archive Safety: Active queue rows are NOT deleted if archive insertion fails
+ [PASS] Archive Safety: Active queue rows deleted ONLY AFTER verified archive storage
+ [PASS] Schema Verification: Returns false if mandatory columns missing
+ [PASS] XML phpupgrade contains peestream_queue_archive table creation
+ [PASS] XML phpupgrade contains url_hash column addition
+ [PASS] XML phpupgrade contains owner_token column addition
+ [PASS] XML phpupgrade contains retry_count column addition
+ [PASS] XML phpupgrade contains uq_post_urlhash UNIQUE KEY migration
+ [PASS] XML phpupgrade verifies archive before deleting duplicates
+
+--- 13. Testing v1.0.4 Hardening: Fail-Closed Schema, Rollback Proofs & Case-Sensitive Deduplication ---
+ [PASS] Schema Verification: Returns false when SHOW COLUMNS query fails
+ [PASS] Schema Verification: Returns false when SHOW INDEX query fails
+ [PASS] Admin boot caller halts execution if schema verification fails
+ [PASS] Cron boot caller halts execution if schema verification fails
+ [PASS] Case-sensitive URLs have distinct SHA-256 hashes
+ [PASS] peestream.php uses BINARY exact URL comparison in deduplication
+ [PASS] peestream_cron.php uses BINARY exact URL comparison in deduplication
+ [PASS] peestream.xml uses BINARY exact URL comparison in deduplication
+ [PASS] peestream.php uses BINARY original_url in recovery UPDATE queries
+ [PASS] peestream_cron.php uses BINARY original_url in recovery UPDATE queries
+ [PASS] peestream.php uses BINARY original_url in queue task SELECT query
+ [PASS] Rollback returns conflict (false) when PeeStream code is absent AND original link is absent
+ [PASS] Backup record is NOT marked rolled_back when neither link is present
+ [PASS] Rollback succeeds (true) when PeeStream code is absent BUT original link is present
+
+=========================================================
+TEST RESULTS: Total: 236 | Passed: 236 | Failed: 0
+=========================================================
+
+>>> ALL VERIFICATION & SECURITY TESTS PASSED PERFECTLY! <<<

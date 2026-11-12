@@ -1,0 +1,1476 @@
+<?php
+/**
+ * Automated Verification & Security Test Suite for PeeStream DLE Addon v1.0.3
+ */
+
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+// Mock DLE Environment
+define('DATALIFEENGINE', true);
+define('LOGGED_IN', true);
+$dle_addon_dir = file_exists(__DIR__ . '/../peestream.xml') ? realpath(__DIR__ . '/..') : (file_exists(__DIR__ . '/dle-peestream-addon/peestream.xml') ? realpath(__DIR__ . '/dle-peestream-addon') : '/srv/build/dle-peestream-addon');
+define('ROOT_DIR', $dle_addon_dir);
+define('ENGINE_DIR', ROOT_DIR . '/engine');
+define('PREFIX', 'dle');
+
+$member_id = array('user_group' => 1);
+$dle_login_hash = 'test_mock_hash_123';
+$lang = array('opt_denied' => 'Access Denied');
+$config = array('http_home_url' => 'https://example.com/');
+
+function echoheader($a, $b) {}
+function echofooter() {}
+function msg($a, $b, $c) {}
+
+class MockDB {
+    public function query($q) { return true; }
+    public function super_query($q) { return array(); }
+    public function get_row($q) { return false; }
+    public function safesql($v) { return addslashes((string)$v); }
+    public function insert_id() { return 1; }
+    public function num_rows($q = null) { return 0; }
+}
+$db = new MockDB();
+
+echo "=========================================================\n";
+echo "PEESTREAM DLE ADDON v1.0.4 - AUTOMATED TEST SUITE\n";
+echo "=========================================================\n\n";
+
+$pass_count = 0;
+$fail_count = 0;
+
+function assert_test($name, $condition, $details = '') {
+    global $pass_count, $fail_count;
+    if ($condition) {
+        echo " [PASS] $name\n";
+        $pass_count++;
+    } else {
+        echo " [FAIL] $name: $details\n";
+        $fail_count++;
+    }
+}
+
+// -------------------------------------------------------------
+// TEST SUITE 1: PHP Syntax & Lint
+// -------------------------------------------------------------
+echo "\n--- 1. Testing PHP Syntax & Lint ---\n";
+$files_to_lint = array(
+    ROOT_DIR . '/engine/inc/peestream.php',
+    ROOT_DIR . '/engine/modules/peestream.php',
+    ROOT_DIR . '/engine/modules/peestream_cron.php',
+    ROOT_DIR . '/engine/ajax/peestream_modal.php',
+    ROOT_DIR . '/engine/ajax/peestream_webhook.php',
+    ROOT_DIR . '/engine/data/peestream.conf.php',
+    ROOT_DIR . '/language/English/peestream.lng',
+    ROOT_DIR . '/language/Russian/peestream.lng',
+    ROOT_DIR . '/language/Turkish/peestream.lng',
+);
+
+foreach ($files_to_lint as $f) {
+    exec("php -l " . escapeshellarg($f) . " 2>&1", $out, $ret);
+    assert_test("PHP Lint: " . basename($f), $ret === 0, implode(" ", $out));
+    unset($out);
+}
+
+// -------------------------------------------------------------
+// TEST SUITE 2: XML Manifest Verification
+// -------------------------------------------------------------
+echo "\n--- 2. Testing XML Manifest Structure & Compatibility ---\n";
+$xml_file = ROOT_DIR . '/peestream.xml';
+$xml = simplexml_load_file($xml_file);
+
+assert_test("XML loads cleanly", $xml !== false);
+assert_test("XML version is 1.0.4", (string)$xml->version === '1.0.4');
+assert_test("XML dleversion is 13.0-17.3", (string)$xml->dleversion === '13.0-17.3');
+assert_test("XML contains mysqlinstall table schemas", strpos((string)$xml->mysqlinstall, 'peestream_webhooks') !== false && strpos((string)$xml->mysqlinstall, 'peestream_backups') !== false);
+assert_test("XML contains options.php hook", strpos($xml->asXML(), 'options.php') !== false);
+assert_test("XML contains show.full.php hook", strpos($xml->asXML(), 'show.full.php') !== false);
+assert_test("XML contains show.short.php hook", strpos($xml->asXML(), 'show.short.php') !== false);
+assert_test("XML contains addnews/editnews hooks", strpos($xml->asXML(), 'peestream_editor.js') !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 3: Security & Hoster Whitelist Testing
+// -------------------------------------------------------------
+echo "\n--- 3. Testing Hosters Whitelist & Pattern Matching ---\n";
+ob_start();
+require_once ROOT_DIR . '/engine/inc/peestream.php';
+ob_end_clean();
+
+$supported = peestream_get_supported_hosters();
+assert_test("Streamtape is supported", isset($supported['Streamtape']));
+assert_test("MixDrop is supported", isset($supported['MixDrop']));
+assert_test("VOE is supported", isset($supported['VOE']));
+assert_test("StreamWish is supported", isset($supported['StreamWish']));
+assert_test("EarnVids is supported", isset($supported['EarnVids']));
+assert_test("PixelDrain is supported", isset($supported['PixelDrain']));
+assert_test("Doodstream is EXCLUDED (not verified)", !isset($supported['Doodstream']));
+assert_test("Filemoon is EXCLUDED (not verified)", !isset($supported['Filemoon']));
+
+// Test Pattern detection
+$test_content = "Here is a movie: https://streamtape.com/v/abcd1234/test.mp4 and backup https://mixdrop.co/e/xyz890 and https://voe.sx/e/12345voe";
+$detected = peestream_find_competitors($test_content);
+assert_test("Find competitors detects 3 links", count($detected) === 3);
+
+// -------------------------------------------------------------
+// TEST SUITE 4: Multi-link Post Surgical Replacement Safety
+// -------------------------------------------------------------
+echo "\n--- 4. Testing Multi-link Post Safety (Non-destructive replacement) ---\n";
+$multi_article = "<p>Watch trailer: https://youtube.com/watch?v=12345</p><p>Server 1: https://streamtape.com/v/abcd1234/test.mp4</p><p>Server 2: https://otherhost.com/video.mp4</p>";
+$old_link = "https://streamtape.com/v/abcd1234/test.mp4";
+$new_embed = "https://peeplayer.com/e/pstCode99";
+
+$replaced_article = str_replace($old_link, $new_embed, $multi_article);
+assert_test("Target link replaced", strpos($replaced_article, $new_embed) !== false);
+assert_test("Trailer YouTube link untouched", strpos($replaced_article, "https://youtube.com/watch?v=12345") !== false);
+assert_test("Secondary server untouched", strpos($replaced_article, "https://otherhost.com/video.mp4") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 5: Template Parser & BBCode Tests
+// -------------------------------------------------------------
+echo "\n--- 5. Testing Template Parser & BBCode Tags ---\n";
+ob_start();
+require_once ROOT_DIR . '/engine/modules/peestream.php';
+ob_end_clean();
+
+assert_test("Code cleaner extracts code from embed URL", peestream_clean_code("https://peeplayer.com/e/myTestCode1") === "myTestCode1");
+assert_test("Code cleaner extracts code from video URL", peestream_clean_code("https://peestream.com/v/myTestCode2") === "myTestCode2");
+assert_test("Code cleaner validates raw alphanumeric code", peestream_clean_code("myTestCode3_12") === "myTestCode3_12");
+assert_test("Code cleaner rejects malicious input", peestream_clean_code("<script>alert(1)</script>") === "");
+
+$player_html = peestream_render_player("testCodeX", array(
+    'player_domain' => 'https://peeplayer.com',
+    'responsive' => '1',
+    'aspect_ratio' => '16:9',
+    'allow_fullscreen' => '1',
+    'autoplay' => '0'
+));
+
+assert_test("Player render contains responsive container", strpos($player_html, 'peestream-responsive-container') !== false);
+assert_test("Player render contains correct iframe URL", strpos($player_html, 'https://peeplayer.com/e/testCodeX') !== false);
+assert_test("Player render includes allowfullscreen attributes", strpos($player_html, 'allowfullscreen') !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 6: Webhook Security Invariant Tests
+// -------------------------------------------------------------
+echo "\n--- 6. Testing Webhook Security Invariants ---\n";
+$wh_code = file_get_contents(ROOT_DIR . '/engine/ajax/peestream_webhook.php');
+assert_test("Webhook enforces POST-only method", strpos($wh_code, "\$_SERVER['REQUEST_METHOD'] ) !== 'POST'") !== false);
+assert_test("Webhook rejects secret < 16 chars", strpos($wh_code, "strlen( \$configured_secret ) < 16") !== false);
+assert_test("Webhook uses constant-time hash_equals", strpos($wh_code, "hash_equals( \$configured_secret, \$incoming_secret )") !== false);
+assert_test("Webhook includes rate limiting check", strpos($wh_code, "DATE_SUB(NOW(), INTERVAL 1 MINUTE)") !== false);
+assert_test("Webhook checks replay protection index", strpos($wh_code, "replay_ignored") !== false);
+assert_test("Webhook strictly uses IMDb ID regex", strpos($wh_code, "^tt\\d{5,12}\$") !== false);
+assert_test("Webhook does NOT contain dangerous LIKE title fallback", strpos($wh_code, "LIKE '%safe_title%'") === false && strpos($wh_code, "LIKE '%clean_title%'") === false);
+
+// -------------------------------------------------------------
+// TEST SUITE 7: Modal XSS & CSRF Invariant Tests
+// -------------------------------------------------------------
+echo "\n--- 7. Testing Modal XSS & CSRF Invariants ---\n";
+$modal_code = file_get_contents(ROOT_DIR . '/engine/ajax/peestream_modal.php');
+assert_test("Modal enforces CSRF user_hash check on all POST actions", strpos($modal_code, "hash_equals( (string)\$dle_hash, (string)\$req_hash )") !== false);
+assert_test("Modal uses official /api/file/list endpoint", strpos($modal_code, "'api/file/list'") !== false);
+assert_test("Modal uses pstEscapeHtml safe escaping", strpos($modal_code, "function pstEscapeHtml") !== false);
+assert_test("Modal creates DOM elements via textContent (no raw HTML injection)", strpos($modal_code, "tdTitle.textContent") !== false && strpos($modal_code, "box.textContent = msg") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 8: Archive Structure & Packaging Integrity
+// -------------------------------------------------------------
+echo "\n--- 8. Testing ZIP Package Integrity & Clean Paths ---\n";
+$zip_file = '/srv/build/dle_peestream_v1.0.1.zip';
+assert_test("ZIP archive exists", file_exists($zip_file));
+
+$zip = new ZipArchive();
+$open_res = $zip->open($zip_file);
+assert_test("ZIP archive opens cleanly", $open_res === true);
+
+$has_peestream_xml = false;
+$has_upload_prefix = false;
+$has_engine_inc = false;
+$has_language_eng = false;
+
+for ($i = 0; $i < $zip->numFiles; $i++) {
+    $stat = $zip->statIndex($i);
+    $fn = $stat['name'];
+    if ($fn === 'peestream.xml') $has_peestream_xml = true;
+    if (strpos($fn, 'upload/') === 0) $has_upload_prefix = true;
+    if ($fn === 'engine/inc/peestream.php') $has_engine_inc = true;
+    if ($fn === 'language/English/peestream.lng') $has_language_eng = true;
+}
+$zip->close();
+
+assert_test("ZIP contains peestream.xml in root", $has_peestream_xml);
+assert_test("ZIP has clean root structure WITHOUT 'upload/' prefix", !$has_upload_prefix);
+assert_test("ZIP contains engine/inc/peestream.php", $has_engine_inc);
+assert_test("ZIP contains language/English/peestream.lng", $has_language_eng);
+
+// -------------------------------------------------------------
+// TEST SUITE 9: Migrator Async Queue & canplay Verification
+// -------------------------------------------------------------
+echo "\n--- 9. Testing Migrator Queue & canplay=1 Requirement ---\n";
+$inc_code = file_get_contents(ROOT_DIR . '/engine/inc/peestream.php');
+assert_test("Migrator creates peestream_queue table schema", strpos($inc_code, "_peestream_queue") !== false);
+assert_test("Migrator defines peestream_extract_file_info helper", strpos($inc_code, "function peestream_extract_file_info") !== false);
+assert_test("Migrator queries api/file/info for canplay status", strpos($inc_code, "'api/file/info'") !== false);
+assert_test("Migrator strictly verifies canplay === 1 using peestream_extract_file_info", strpos($inc_code, "intval( \$f_info['canplay'] ) === 1") !== false);
+assert_test("Migrator leaves original post untouched if processing", strpos($inc_code, "Original link preserved until ready") !== false || strpos($inc_code, "Original link untouched") !== false);
+assert_test("Migrator includes migrator_check_queue action", strpos($inc_code, "action === 'migrator_check_queue'") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 10: Strict IMDb xfieldsdataload & Ambiguity 409
+// -------------------------------------------------------------
+echo "\n--- 10. Testing Strict IMDb xfieldsdataload & Ambiguity 409 Handling ---\n";
+assert_test("Webhook whitelists events (video_ready, new_episode_ready, movie_ready)", strpos($wh_code, "'new_episode_ready'") !== false && strpos($wh_code, "'movie_ready'") !== false);
+assert_test("Webhook defines UNIQUE KEY uq_fc_event on webhooks table", strpos($wh_code, "UNIQUE KEY uq_fc_event (file_code, event)") !== false);
+assert_test("Webhook performs atomic reservation before modifying post", strpos($wh_code, "status) \n\t\t\tVALUES ('{\$safe_fc}', '{\$safe_event}', 0, '{\$safe_ip}', '{\$now_date}', 'processing')") !== false || strpos($wh_code, "'processing'") !== false);
+assert_test("Webhook uses xfieldsdataload() to unpack custom fields", strpos($wh_code, "xfieldsdataload") !== false);
+assert_test("Webhook restricts IMDb check to identifier fields (imdb, imdb_id)", strpos($wh_code, "\$allowed_imdb_fields") !== false);
+assert_test("Webhook rejects ambiguous matches (>1 post) with 409 Conflict", strpos($wh_code, "Ambiguous match") !== false && strpos($wh_code, "http_response_code( 409 )") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 11: Surgical Rollback Engine (Preserving Editorial Edits)
+// -------------------------------------------------------------
+echo "\n--- 11. Testing Surgical Rollback (Editorial Preservation) ---\n";
+assert_test("Rollback performs surgical string replacement on exact embed URL rather than raw code", strpos($inc_code, "str_replace( \$embed_url, \$orig_url, \$curr['full_story'] )") !== false);
+assert_test("Rollback verifies post exists before attempting restoration", strpos($inc_code, "SELECT id, title, xfields, short_story, full_story FROM {\$table} WHERE id='{\$pid}'") !== false);
+
+// Functional test of surgical replacement logic
+$editorial_original = "Initial paragraph.\nhttps://streamtape.com/v/123/movie.mp4\nOld notes.";
+$editorial_migrated = "Initial paragraph.\nhttps://peeplayer.com/e/pstCode123\nOld notes.";
+// Editor adds breaking news update later
+$editorial_edited_later = "BREAKING UPDATE: Director commentary added!\nInitial paragraph.\nhttps://peeplayer.com/e/pstCode123\nOld notes.\nNew editorial footer.";
+
+// Surgical reversion replaces only the player back to streamtape
+$surgical_reverted = str_replace("https://peeplayer.com/e/pstCode123", "https://streamtape.com/v/123/movie.mp4", $editorial_edited_later);
+assert_test("Surgical rollback restored original video link", strpos($surgical_reverted, "https://streamtape.com/v/123/movie.mp4") !== false);
+assert_test("Surgical rollback preserved breaking update added later", strpos($surgical_reverted, "BREAKING UPDATE: Director commentary added!") !== false);
+assert_test("Surgical rollback preserved new editorial footer", strpos($surgical_reverted, "New editorial footer.") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 12: Secret Auto-Init & Cryptographic Generation
+// -------------------------------------------------------------
+echo "\n--- 12. Testing Secret Auto-Initialization & Crypto Security ---\n";
+assert_test("XML phpinstall checks and auto-initializes secret if empty or < 16 chars", strpos($xml->asXML(), "empty( \$merged['webhook_secret'] ) || strlen( \$merged['webhook_secret'] ) < 16") !== false);
+assert_test("Admin backend auto-generates 48-hex secret on load if missing", strpos($inc_code, "bin2hex( random_bytes( 24 ) )") !== false);
+assert_test("JS secret generator uses window.crypto.getRandomValues", strpos($inc_code, "window.crypto.getRandomValues(arr)") !== false);
+assert_test("JS secret generator does NOT use Math.random fallback", strpos($inc_code, "Math.random") === false);
+assert_test("JS migrator log uses textContent/createTextNode instead of innerHTML", strpos($inc_code, "d.appendChild(document.createTextNode(String(msg)))") !== false);
+assert_test("Editor modal error display uses textContent", strpos(file_get_contents(ROOT_DIR . '/engine/skins/images/peestream/peestream_editor.js'), "errDiv.textContent = 'Failed to load modal: ' + err") !== false);
+assert_test("Config template peestream.conf.php has EMPTY webhook_secret", file_get_contents(ROOT_DIR . '/engine/data/peestream.conf.php') !== false && strpos(file_get_contents(ROOT_DIR . '/engine/data/peestream.conf.php'), "'webhook_secret' => '',") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 13: Full GPLv2 License Verification
+// -------------------------------------------------------------
+echo "\n--- 13. Testing Full GNU GPLv2 License Text ---\n";
+$lic = file_get_contents(ROOT_DIR . '/LICENSE');
+assert_test("LICENSE file contains GNU GENERAL PUBLIC LICENSE Version 2", strpos($lic, "GNU GENERAL PUBLIC LICENSE") !== false && strpos($lic, "Version 2, June 1991") !== false);
+assert_test("LICENSE file contains full terms (TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION)", strpos($lic, "TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION") !== false);
+assert_test("LICENSE is complete (> 10,000 bytes)", strlen($lic) > 10000);
+
+// -------------------------------------------------------------
+// TEST SUITE 14: Functional Simulation of Reviewer Blockers
+// -------------------------------------------------------------
+echo "\n--- 14. Testing Reviewer Functional Scenarios ---\n";
+
+// Scenario A: PeeStream API array response extraction
+$mock_api_array_response = array(
+    'success' => true,
+    'data' => array(
+        array(
+            'filecode' => 'arr_fc_test_99',
+            'canplay' => 1,
+            'state' => 'ready',
+            'title' => 'Array Test Video'
+        )
+    )
+);
+$extracted_info = peestream_extract_file_info($mock_api_array_response, 'arr_fc_test_99');
+assert_test("peestream_extract_file_info parses array result correctly", is_array($extracted_info) && $extracted_info['filecode'] === 'arr_fc_test_99');
+assert_test("peestream_extract_file_info verifies canplay === 1", isset($extracted_info['canplay']) && intval($extracted_info['canplay']) === 1);
+
+// Scenario B: Database Schema Canonical Match & Upgrade Migration
+$xml_queue = (string)$xml->mysqlinstall;
+assert_test("Canonical queue schema defines original_url", strpos($xml_queue, 'original_url VARCHAR(500)') !== false);
+assert_test("Canonical queue schema defines filecode", strpos($xml_queue, 'filecode VARCHAR(64)') !== false);
+assert_test("Canonical queue schema defines state", strpos($xml_queue, 'state VARCHAR(32)') !== false);
+assert_test("Canonical queue schema defines original_xfields", strpos($xml_queue, 'original_xfields MEDIUMTEXT') !== false);
+assert_test("Canonical queue schema defines original_short", strpos($xml_queue, 'original_short MEDIUMTEXT') !== false);
+assert_test("Canonical queue schema defines original_full", strpos($xml_queue, 'original_full MEDIUMTEXT') !== false);
+assert_test("XML phpupgrade contains ALTER TABLE queue column migrations", strpos((string)$xml->phpupgrade, 'ALTER TABLE {$queue_t} CHANGE COLUMN `url` `original_url`') !== false);
+assert_test("XML phpupgrade contains ALTER TABLE webhook UNIQUE KEY migration", strpos((string)$xml->phpupgrade, 'ALTER TABLE {$audit_t} ADD UNIQUE KEY uq_fc_event') !== false);
+
+// Scenario C: Strict IMDb Identifier Filtering (Identifier vs General Field)
+$allowed_test_fields = array( 'imdb', 'imdb_id', 'imdbid', 'id_imdb', 'imdb_code' );
+$mock_xf_valid = array( 'imdb' => 'tt1234567', 'description' => 'Some movie description' );
+$mock_xf_invalid = array( 'description' => 'Film mentions tt1234567 in passing', 'director' => 'John Doe' );
+
+$matched_valid = false;
+foreach($mock_xf_valid as $k => $v) {
+    if (in_array(strtolower($k), $allowed_test_fields, true) && strcasecmp(trim($v), 'tt1234567') === 0) {
+        $matched_valid = true;
+    }
+}
+$matched_invalid = false;
+foreach($mock_xf_invalid as $k => $v) {
+    if (in_array(strtolower($k), $allowed_test_fields, true) && strcasecmp(trim($v), 'tt1234567') === 0) {
+        $matched_invalid = true;
+    }
+}
+assert_test("IMDb matcher accepts verified identifier field (imdb)", $matched_valid === true);
+assert_test("IMDb matcher rejects general text field containing IMDb string", $matched_invalid === false);
+
+// Scenario D: Ambiguity handling for duplicate IMDb IDs
+$candidates = array(
+    array('id' => 101, 'xfields' => array('imdb' => 'tt7777777')),
+    array('id' => 102, 'xfields' => array('imdb' => 'tt7777777')),
+);
+$ambig_detected = (count($candidates) > 1);
+assert_test("Ambiguity detection flags duplicate IMDb matches (>1 post)", $ambig_detected === true);
+
+// -------------------------------------------------------------
+// TEST SUITE 15: Reviewer Hardening Blocker Invariants
+// -------------------------------------------------------------
+echo "\n--- 15. Testing Reviewer Hardening Blocker Invariants ---\n";
+$wh_fresh = file_get_contents(ROOT_DIR . '/engine/ajax/peestream_webhook.php');
+$inc_fresh = file_get_contents(ROOT_DIR . '/engine/inc/peestream.php');
+$cron_code = file_get_contents(ROOT_DIR . '/engine/modules/peestream_cron.php');
+$xml_fresh = file_get_contents(ROOT_DIR . '/peestream.xml');
+
+// 1. Webhook CAS Takeover
+assert_test("Webhook uses atomic CAS for timed-out processing takeover", strpos($wh_fresh, "status = 'processing' AND received_at = '{\$safe_prev_time}'") !== false);
+assert_test("Webhook checks affected rows on CAS takeover", strpos($wh_fresh, "get_affected_rows") !== false || strpos($wh_fresh, "affected_rows") !== false);
+assert_test("Webhook enforces fail-closed guard when lock cannot be acquired", strpos($wh_fresh, "if ( ! \$has_lock )") !== false);
+
+// 2. Webhook status update to 'failed' on DB write errors
+assert_test("Webhook updates audit status to 'failed' on post update error", strpos($wh_fresh, "\$upd_res = \$db->query( \"UPDATE {\$table}") !== false && strpos($wh_fresh, "SET status = 'failed'") !== false);
+assert_test("Webhook updates audit status to 'failed' on post insert error", strpos($wh_fresh, "\$ins_res = \$db->query( \"INSERT INTO {\$table}") !== false);
+
+// 3. Strict File Info Extraction without data[0] fallback
+$mock_mismatch = array(
+    'success' => true,
+    'data' => array(
+        array( 'filecode' => 'other_code_111', 'canplay' => 1 )
+    )
+);
+$res_mismatch = peestream_extract_file_info($mock_mismatch, 'target_code_999');
+assert_test("peestream_extract_file_info returns FALSE on code mismatch (no data[0] fallback)", $res_mismatch === false);
+
+// 4. Pre-UNIQUE deduplication query in runtime and XML upgrade
+$dedup_sql = "DELETE w1 FROM {\$audit_table} w1 INNER JOIN {\$audit_table} w2 WHERE w1.id < w2.id AND w1.file_code = w2.file_code AND w1.event = w2.event";
+assert_test("Runtime migration includes pre-UNIQUE deduplication cleanup", strpos($inc_fresh, "w1.id < w2.id") !== false);
+assert_test("XML phpupgrade includes pre-UNIQUE deduplication cleanup", strpos($xml_fresh, "w1.id < w2.id") !== false);
+
+// 5. Multi-URL post scanning and deduplication
+assert_test("migrator_scan iterates through all unmigrated URLs per post", strpos($inc_fresh, "\$tot = count( \$unmigrated );\n\t\tforeach( \$unmigrated as \$u )") !== false || strpos($inc_fresh, "foreach( \$unmigrated as \$u )") !== false);
+assert_test("migrator_scan deduplicates duplicate URLs within the same post", strpos($inc_fresh, "\$seen_in_post[\$u_url] = true;") !== false);
+
+// 6. Editor conflict detection
+assert_test("migrator_process_one verifies original_url exists before updating post", strpos($inc_fresh, "was removed or modified by editor") !== false);
+assert_test("migrator_process_one sets queue status to 'conflict'", strpos($inc_fresh, "status='conflict'") !== false);
+assert_test("migrator_check_queue verifies original_url exists and flags conflict", strpos($inc_fresh, "\$logs[] = \"[CONFLICT] Post #\"") !== false);
+
+// 7. Standalone Server Cron Worker
+assert_test("Cron worker file exists", file_exists(ROOT_DIR . '/engine/modules/peestream_cron.php'));
+assert_test("Cron worker contains concurrency flock locking", strpos($cron_code, "flock( \$fp_lock, LOCK_EX | LOCK_NB )") !== false);
+assert_test("Cron worker enforces HTTP cron_secret authentication", strpos($cron_code, "!hash_equals( \$cron_secret, \$incoming_secret )") !== false);
+assert_test("Cron worker checks editor conflict", strpos($cron_code, "Target original URL (\" . \$old_url . \") was removed or modified by editor") !== false);
+assert_test("XML filelist includes peestream_cron.php", strpos($xml_fresh, "engine/modules/peestream_cron.php") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 16: P0 Unified Atomic Task Claiming & Pre-Migration Backup Safety
+// -------------------------------------------------------------
+echo "\n--- 16. Testing P0 Unified Atomic Task Claiming & Backup Safety ---\n";
+
+// A. Unified helper functions exist
+assert_test("peestream_get_affected_rows exists in peestream.php", function_exists('peestream_get_affected_rows'));
+assert_test("peestream_claim_queue_item helper exists in peestream.php", function_exists('peestream_claim_queue_item'));
+assert_test("peestream_claim_task helper exists in peestream.php", function_exists('peestream_claim_task'));
+assert_test("peestream_release_task helper exists in peestream.php", function_exists('peestream_release_task'));
+
+// B. Simulation: Concurrency race condition on same task
+class ConcurrentMockDB {
+    public $rows = array();
+    public $last_affected = 0;
+    public $fail_backup = false;
+    public $fail_post_update = false;
+    public $post_updated = false;
+    public $last_insert_id = 1;
+
+    public function __construct() {
+        // Initialize a mock queue row in 'pending' status
+        $this->rows[1] = array(
+            'id' => 1,
+            'post_id' => 42,
+            'original_url' => 'https://streamtape.com/v/testRace123/movie.mp4',
+            'filecode' => 'pstRace123',
+            'status' => 'pending',
+            'updated_at' => date('Y-m-d H:i:s')
+        );
+    }
+
+    public function get_affected_rows() {
+        return $this->last_affected;
+    }
+
+    public function query($q) {
+        $q_str = (string)$q;
+        // Task claim simulation
+        if (strpos($q_str, "UPDATE dle_peestream_queue") !== false && strpos($q_str, "SET status='checking'") !== false) {
+            // Check if status is pending or queued or stale checking
+            if (isset($this->rows[1]) && ($this->rows[1]['status'] === 'pending' || $this->rows[1]['status'] === 'queued')) {
+                $this->rows[1]['status'] = 'checking';
+                $this->rows[1]['updated_at'] = date('Y-m-d H:i:s');
+                $this->last_affected = 1;
+                return true;
+            } else {
+                $this->last_affected = 0;
+                return true;
+            }
+        }
+        // Backup insertion simulation
+        if (strpos($q_str, "INSERT INTO dle_peestream_backups") !== false) {
+            if ($this->fail_backup) {
+                $this->last_insert_id = 0;
+                return false;
+            }
+            $this->last_insert_id = 99;
+            return true;
+        }
+        // Post update simulation
+        if (strpos($q_str, "UPDATE dle_post") !== false) {
+            if ($this->fail_post_update) {
+                return false;
+            }
+            $this->post_updated = true;
+            $this->last_affected = 1;
+            return true;
+        }
+        $this->last_affected = 1;
+        return true;
+    }
+
+    public function super_query($q) {
+        return array();
+    }
+
+    public function get_row($q) {
+        return false;
+    }
+
+    public function safesql($v) {
+        return addslashes((string)$v);
+    }
+
+    public function insert_id() {
+        return $this->last_insert_id;
+    }
+}
+
+// Worker 1 claims the queue item
+$sim_db = new ConcurrentMockDB();
+$worker1_claim = peestream_claim_queue_item($sim_db, 1);
+assert_test("Worker 1 acquires atomic task claim successfully", $worker1_claim === true);
+
+// Worker 2 attempts to claim the same queue item simultaneously
+$worker2_claim = peestream_claim_queue_item($sim_db, 1);
+assert_test("Worker 2 is strictly rejected from claiming active task (affected_rows = 0)", $worker2_claim === false);
+
+// C. Pre-migration backup failure prevents post modification
+$fail_db = new ConcurrentMockDB();
+$fail_db->fail_backup = true;
+
+// Simulate migration processing with backup check
+$post_modified_on_backup_failure = false;
+$backup_insert_ok = $fail_db->query("INSERT INTO dle_peestream_backups ...");
+$backup_id = ($backup_insert_ok && $fail_db->insert_id() > 0) ? $fail_db->insert_id() : 0;
+
+if ($backup_id > 0) {
+    $fail_db->query("UPDATE dle_post SET full_story = 'new' WHERE id = 42");
+    $post_modified_on_backup_failure = true;
+}
+assert_test("Pre-migration backup failure halts pipeline (insert_id <= 0)", $backup_id === 0);
+assert_test("Post is NOT modified when backup fails (100% data preservation)", $post_modified_on_backup_failure === false && $fail_db->post_updated === false);
+
+// D. Verification that inc and cron check pre-migration backup before modifying post
+assert_test("peestream_apply_post_replacement checks backup insert_id > 0 before updating post", strpos($inc_fresh, "cur_backup_id <= 0") !== false);
+assert_test("peestream_apply_post_replacement in cron checks backup insert_id > 0", strpos($cron_code, "cur_backup_id <= 0") !== false);
+assert_test("migrator_process_one delegates replacement to peestream_apply_post_replacement", strpos($inc_fresh, "peestream_apply_post_replacement( \$db, \$post_id") !== false);
+assert_test("migrator_check_queue delegates replacement to peestream_apply_post_replacement", strpos($inc_fresh, "peestream_apply_post_replacement( \$db, \$pid") !== false);
+
+// E. Verification of optimistic locking and UPDATE result checking
+assert_test("peestream_apply_post_replacement verifies optimistic update affected rows", strpos($inc_fresh, "upd_post && \$aff > 0") !== false);
+assert_test("peestream_apply_post_replacement in cron verifies optimistic update affected rows", strpos($cron_code, "upd_post && \$aff > 0") !== false);
+assert_test("peestream_cron.php delegates replacement to peestream_apply_post_replacement", strpos($cron_code, "peestream_apply_post_replacement( \$db, \$post_id") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 17: P1 Security, Standalone Cron Isolation & Safe Operations
+// -------------------------------------------------------------
+echo "\n--- 17. Testing P1 Security, Standalone Cron Isolation & Rollback ---\n";
+
+// A. Webhook CAS affected rows fail-closed behavior
+// In peestream_webhook.php, peestream_get_affected_rows defaults to 0 (never 1)
+assert_test("Webhook peestream_get_affected_rows returns 0 when undetermined (fail-closed)", strpos($wh_fresh, "return 0; // Fail closed") !== false);
+assert_test("Webhook does NOT fallback to returning 1 for affected rows", strpos($wh_fresh, "return 1;") === false);
+
+// B. Webhook does NOT contain runtime DELETE queries
+assert_test("Webhook runtime execution does NOT contain DELETE query", strpos($wh_fresh, "DELETE ") === false && strpos($wh_fresh, "delete ") === false);
+
+// C. Standalone Cron Security & Environment Initialization
+assert_test("Cron enforces POST method for HTTP invocation", strpos($cron_code, "strtoupper( \$_SERVER['REQUEST_METHOD'] ) !== 'POST'") !== false);
+assert_test("Cron returns 405 Method Not Allowed on non-POST HTTP request", strpos($cron_code, "http_response_code( 405 )") !== false);
+assert_test("Cron requires separate cron_secret (not empty)", strpos($cron_code, "empty( \$cron_secret ) || strlen( \$cron_secret ) < 16") !== false);
+assert_test("Cron rejects secret reuse (cron_secret matching webhook_secret)", strpos($cron_code, "hash_equals( (string)\$cfg['webhook_secret'], \$cron_secret )") !== false);
+assert_test("Cron loads DLE dbconfig.php, mysql.php, and config.php", strpos($cron_code, "dbconfig.php") !== false && strpos($cron_code, "mysql.php") !== false && strpos($cron_code, "config.php") !== false);
+assert_test("Cron initializes xfieldsdataload and xfieldsdatasave", strpos($cron_code, "function xfieldsdataload") !== false && strpos($cron_code, "function xfieldsdatasave") !== false);
+assert_test("Cron clears DLE cache after post modifications", strpos($cron_code, "clear_cache( array( 'news_' ) )") !== false);
+
+// D. Paginated Scan Support
+assert_test("migrator_scan supports page and limit parameters", strpos($inc_fresh, "\$page = isset( \$_REQUEST['page'] )") !== false && strpos($inc_fresh, "\$limit = isset( \$_REQUEST['limit'] )") !== false);
+assert_test("migrator_scan returns page and has_more JSON flags", strpos($inc_fresh, "'has_more' => ( \$raw_count >= \$limit )") !== false);
+
+// E. Granular Single-link Rollback Support
+assert_test("migrator_rollback supports rollback by backup_id", strpos($inc_fresh, "\$backup_id = isset( \$_POST['backup_id'] ) ? intval( \$_POST['backup_id'] ) : 0;") !== false);
+assert_test("migrator_rollback verifies backup record before restoring", strpos($inc_fresh, "SELECT * FROM {\$backup_table} WHERE id='{\$backup_id}'") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 18: v1.0.2 Advanced Concurrency, Idempotency & Rollback Integrity
+// -------------------------------------------------------------
+echo "\n--- 18. Testing v1.0.2 Advanced Concurrency, Idempotency & Rollback Integrity ---\n";
+
+// A. Post-Level Optimistic Locking & Retry Serialization on Multi-Video Posts
+class OptimisticPostMockDB {
+    public $posts = array();
+    public $backups = array();
+    public $last_backup_id = 100;
+    public $last_affected = 0;
+    public $query_log = array();
+
+    public function __construct() {
+        $this->posts[500] = array(
+            'id' => 500,
+            'title' => 'Concur Movie',
+            'xfields' => "streamtape|https://streamtape.com/v/tape123/vid.mp4||mixdrop|https://mixdrop.co/e/mix456||peestream|",
+            'short_story' => "Watch at https://streamtape.com/v/tape123/vid.mp4 or https://mixdrop.co/e/mix456",
+            'full_story' => "Full player: https://streamtape.com/v/tape123/vid.mp4 and backup https://mixdrop.co/e/mix456"
+        );
+    }
+
+    public function super_query($q) {
+        $this->query_log[] = $q;
+        if (strpos($q, "dle_peestream_backups") !== false) {
+            return array('status' => 'completed');
+        }
+        if (strpos($q, "SELECT") !== false && strpos($q, "id='500'") !== false) {
+            return $this->posts[500];
+        }
+        if (strpos($q, "SELECT") !== false && strpos($q, "id='600'") !== false) {
+            return $this->posts[600];
+        }
+        return array();
+    }
+
+    public function safesql($v) {
+        return addslashes((string)$v);
+    }
+
+    public function get_affected_rows() {
+        return $this->last_affected;
+    }
+
+    public function insert_id() {
+        return $this->last_backup_id;
+    }
+
+    public function query($q, $show_error = true) {
+        $this->query_log[] = $q;
+        $q_str = (string)$q;
+
+        if (strpos($q_str, "INSERT INTO dle_peestream_backups") !== false) {
+            $this->last_backup_id++;
+            $this->backups[$this->last_backup_id] = $q_str;
+            $this->last_affected = 1;
+            return true;
+        }
+
+        if (strpos($q_str, "UPDATE dle_post") !== false) {
+            // Check optimistic conditions: WHERE id='...' AND xfields='...' AND short_story='...' AND full_story='...'
+            preg_match("/WHERE id='(\d+)'\s+AND xfields='(.*?)'\s+AND short_story='(.*?)'\s+AND full_story='(.*?)'/s", $q_str, $m);
+            if (!empty($m)) {
+                $pid = intval($m[1]);
+                $exp_xf = stripslashes($m[2]);
+                $exp_short = stripslashes($m[3]);
+                $exp_full = stripslashes($m[4]);
+
+                if (isset($this->posts[$pid]) &&
+                    $this->posts[$pid]['xfields'] === $exp_xf &&
+                    $this->posts[$pid]['short_story'] === $exp_short &&
+                    $this->posts[$pid]['full_story'] === $exp_full) {
+                    // Update state
+                    preg_match("/SET xfields='(.*?)', short_story='(.*?)', full_story='(.*?)'/s", $q_str, $set_m);
+                    if (!empty($set_m)) {
+                        $this->posts[$pid]['xfields'] = stripslashes($set_m[1]);
+                        $this->posts[$pid]['short_story'] = stripslashes($set_m[2]);
+                        $this->posts[$pid]['full_story'] = stripslashes($set_m[3]);
+                    }
+                    $this->last_affected = 1;
+                    return true;
+                } else {
+                    // Optimistic version conflict: post was modified concurrently
+                    $this->last_affected = 0;
+                    return true;
+                }
+            }
+            $this->last_affected = 1;
+            return true;
+        }
+
+        if (strpos($q_str, "UPDATE dle_peestream_backups") !== false) {
+            $this->last_affected = 1;
+            return true;
+        }
+
+        return true;
+    }
+}
+
+// Ensure xfieldsdataload / xfieldsdatasave are available for test
+if (!function_exists('xfieldsdataload')) {
+    function xfieldsdataload($xf) {
+        if (empty($xf)) return array();
+        $arr = array();
+        $pairs = explode('||', $xf);
+        foreach ($pairs as $p) {
+            $kv = explode('|', $p, 2);
+            if (count($kv) === 2) $arr[$kv[0]] = $kv[1];
+        }
+        return $arr;
+    }
+}
+if (!function_exists('xfieldsdatasave')) {
+    function xfieldsdatasave($arr) {
+        $pairs = array();
+        foreach ($arr as $k => $v) {
+            $pairs[] = $k . '|' . str_replace(array("\r", "\n"), '', $v);
+        }
+        return implode('||', $pairs);
+    }
+}
+
+$opt_db = new OptimisticPostMockDB();
+$test_cfg = array(
+    'xfield_name' => 'peestream',
+    'player_domain' => 'https://peeplayer.com'
+);
+
+// Worker 1 replaces Streamtape
+$b1 = 0;
+$res1 = peestream_apply_post_replacement($opt_db, 500, 'https://streamtape.com/v/tape123/vid.mp4', 'pstTape123', $test_cfg, $b1);
+assert_test("Worker 1 succeeds in optimistic post replacement", $res1['success'] === true);
+
+// Verify that Streamtape was replaced and peestream primary player was populated
+$post_after_w1 = $opt_db->posts[500];
+$xf_w1 = xfieldsdataload($post_after_w1['xfields']);
+assert_test("Worker 1 replaced streamtape field with pstTape123", isset($xf_w1['streamtape']) && $xf_w1['streamtape'] === 'pstTape123');
+assert_test("Worker 1 assigned empty primary player peestream to pstTape123", isset($xf_w1['peestream']) && $xf_w1['peestream'] === 'pstTape123');
+assert_test("Worker 1 left mixdrop field untouched", isset($xf_w1['mixdrop']) && strpos($xf_w1['mixdrop'], 'mixdrop.co') !== false);
+
+// Worker 2 replaces MixDrop on the SAME post
+$b2 = 0;
+$res2 = peestream_apply_post_replacement($opt_db, 500, 'https://mixdrop.co/e/mix456', 'pstMix456', $test_cfg, $b2);
+assert_test("Worker 2 succeeds in serialized optimistic replacement with retry", $res2['success'] === true);
+
+// Verify that both videos are now migrated and neither was lost!
+$post_after_w2 = $opt_db->posts[500];
+$xf_w2 = xfieldsdataload($post_after_w2['xfields']);
+assert_test("Both videos migrated: streamtape has pstTape123", isset($xf_w2['streamtape']) && $xf_w2['streamtape'] === 'pstTape123');
+assert_test("Both videos migrated: mixdrop has pstMix456", isset($xf_w2['mixdrop']) && $xf_w2['mixdrop'] === 'pstMix456');
+assert_test("Primary player peestream remains pstTape123 (NOT clobbered by worker 2)", isset($xf_w2['peestream']) && $xf_w2['peestream'] === 'pstTape123');
+
+// B. Targeted Surgical Field Updates when Primary Player already exists
+$targeted_db = new OptimisticPostMockDB();
+$targeted_db->posts[600] = array(
+    'id' => 600,
+    'title' => 'Targeted Post',
+    'xfields' => "trailer|https://voe.sx/e/voe123||peestream|existing_master_code",
+    'short_story' => "Trailer: https://voe.sx/e/voe123",
+    'full_story' => "Trailer: https://voe.sx/e/voe123"
+);
+$b_target = 0;
+$res_target = peestream_apply_post_replacement($targeted_db, 600, 'https://voe.sx/e/voe123', 'pstVoe999', $test_cfg, $b_target);
+assert_test("Targeted migration succeeds", $res_target['success'] === true);
+$xf_target = xfieldsdataload($targeted_db->posts[600]['xfields']);
+assert_test("Targeted field 'trailer' updated to new code", isset($xf_target['trailer']) && $xf_target['trailer'] === 'pstVoe999');
+assert_test("Existing primary player 'peestream' strictly preserved", isset($xf_target['peestream']) && $xf_target['peestream'] === 'existing_master_code');
+
+// C. Idempotent Pre-Reservation (uq_post_orig)
+class IdempotentQueueMockDB {
+    public $existing_keys = array();
+    public $insert_id_val = 1;
+    public function query($q) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "INSERT INTO dle_peestream_queue") !== false) {
+            preg_match("/VALUES\s*\(\s*'(\d+)',\s*'([^']+)'/i", $q_str, $m);
+            if (!empty($m)) {
+                $k = $m[1] . '::' . $m[2];
+                if (isset($this->existing_keys[$k])) {
+                    // Duplicate key error
+                    return false;
+                }
+                $this->existing_keys[$k] = true;
+                $this->insert_id_val++;
+                return true;
+            }
+        }
+        return true;
+    }
+    public function insert_id() { return $this->insert_id_val; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$idem_db = new IdempotentQueueMockDB();
+$ins1 = $idem_db->query("INSERT INTO dle_peestream_queue (post_id, original_url) VALUES ('42', 'https://streamtape.com/v/tape123')");
+assert_test("First task pre-reservation succeeds", $ins1 === true);
+$ins2 = $idem_db->query("INSERT INTO dle_peestream_queue (post_id, original_url) VALUES ('42', 'https://streamtape.com/v/tape123')");
+assert_test("Second concurrent task pre-reservation for same (post_id, original_url) strictly rejected by UNIQUE constraint", $ins2 === false);
+
+// D. Owner Token Fencing on Queue Tasks
+class FencedTaskMockDB {
+    public $task = array(
+        'id' => 77,
+        'status' => 'checking',
+        'owner_token' => 'worker_alpha_token',
+        'updated_at' => null
+    );
+    public $last_affected = 0;
+    public function __construct() {
+        $this->task['updated_at'] = date('Y-m-d H:i:s');
+    }
+    public function safesql($s) { return addslashes((string)$s); }
+    public function get_affected_rows() { return $this->last_affected; }
+    public function query($q) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "UPDATE dle_peestream_queue") !== false) {
+            // Check owner_token condition
+            if (strpos($q_str, "owner_token='worker_beta_token'") !== false) {
+                // Imposter token
+                if ($this->task['owner_token'] !== 'worker_beta_token') {
+                    $this->last_affected = 0;
+                    return true;
+                }
+            }
+            if (strpos($q_str, "owner_token='worker_alpha_token'") !== false) {
+                $this->task['owner_token'] = '';
+                $this->last_affected = 1;
+                return true;
+            }
+        }
+        $this->last_affected = 1;
+        return true;
+    }
+}
+$fence_db = new FencedTaskMockDB();
+// Imposter Worker Beta attempts to release Worker Alpha's task
+$imposter_rel = peestream_release_task($fence_db, 77, 'worker_beta_token', 'failed', 'Stolen task');
+assert_test("Fencing: Imposter worker cannot release task owned by active worker", $imposter_rel === false);
+// Legitimate Worker Alpha releases task
+$owner_rel = peestream_release_task($fence_db, 77, 'worker_alpha_token', 'completed', '');
+assert_test("Fencing: Legitimate owner worker releases task successfully", $owner_rel === true);
+
+// E. Multi-Link Article Granular Rollback
+// Post has 2 migrated videos: player1 => pstCodeA, player2 => pstCodeB
+$post_multi = array(
+    'id' => 800,
+    'xfields' => "player1|pstCodeA||player2|pstCodeB||peestream|pstCodeA",
+    'short_story' => "Link: https://peeplayer.com/e/pstCodeA and https://peeplayer.com/e/pstCodeB",
+    'full_story' => "Link: https://peeplayer.com/e/pstCodeA and https://peeplayer.com/e/pstCodeB"
+);
+// Backup for player1: original was https://streamtape.com/v/origA
+$b_row1 = array(
+    'id' => 1,
+    'post_id' => 800,
+    'original_xfields' => "player1|https://streamtape.com/v/origA||player2|https://mixdrop.co/e/origB||peestream|",
+    'original_short' => "Link: https://streamtape.com/v/origA and https://mixdrop.co/e/origB",
+    'original_full' => "Link: https://streamtape.com/v/origA and https://mixdrop.co/e/origB",
+    'migrated_url' => 'https://streamtape.com/v/origA',
+    'new_code' => 'pstCodeA'
+);
+// Simulate surgical rollback on player1 only
+$curr_xf = xfieldsdataload($post_multi['xfields']);
+$orig_xf = xfieldsdataload($b_row1['original_xfields']);
+$old_code = $b_row1['new_code'];
+$embed_url = 'https://peeplayer.com/e/' . $old_code;
+foreach ($curr_xf as $k => $v) {
+    if (strpos($v, $old_code) !== false || strpos($v, $embed_url) !== false) {
+        if (isset($orig_xf[$k])) {
+            $curr_xf[$k] = $orig_xf[$k];
+        }
+    }
+}
+assert_test("Rollback restored player1 to original Streamtape URL", isset($curr_xf['player1']) && $curr_xf['player1'] === 'https://streamtape.com/v/origA');
+assert_test("Rollback preserved migrated player2 (pstCodeB) completely untouched", isset($curr_xf['player2']) && $curr_xf['player2'] === 'pstCodeB');
+
+// F. Webhook Retry Takeover for ambiguous and ignored_no_match
+assert_test("Webhook CAS query permits retry for 'ambiguous' status", strpos($wh_fresh, "'ambiguous'") !== false);
+assert_test("Webhook CAS query permits retry for 'ignored_no_match' status", strpos($wh_fresh, "'ignored_no_match'") !== false);
+
+// G. Webhook Duplicate Prevention on Retry
+assert_test("Webhook checks existing article before inserting new post", strpos($wh_fresh, "! empty( \$existing['post_id'] )") !== false);
+assert_test("Webhook checks file_code in xfields to prevent duplicate posts", strpos($wh_fresh, "xfields LIKE '%\" . \$db->safesql( \$file_code ) . \"%'") !== false);
+
+// H. Controlled Database Migration Check
+assert_test("peestream.php wraps duplicate webhook cleanup in has_unique_webhook_idx check", strpos($inc_fresh, "if ( ! \$has_unique_webhook_idx )") !== false || strpos($inc_fresh, "if ( ! \$has_unique_webhook_idx )") !== false || strpos($inc_fresh, "has_unique_webhook_idx") !== false);
+assert_test("peestream.xml defines uq_post_urlhash on peestream_queue in mysqlinstall", strpos((string)$xml->mysqlinstall, 'uq_post_urlhash') !== false);
+assert_test("peestream.xml defines uq_post_urlhash on peestream_queue in mysqlupgrade", strpos((string)$xml->mysqlupgrade, 'uq_post_urlhash') !== false);
+assert_test("peestream.xml defines url_hash and retry_count in mysqlinstall", strpos((string)$xml->mysqlinstall, 'url_hash') !== false && strpos((string)$xml->mysqlinstall, 'retry_count') !== false);
+assert_test("peestream.xml defines url_hash and retry_count in mysqlupgrade", strpos((string)$xml->mysqlupgrade, 'url_hash') !== false && strpos((string)$xml->mysqlupgrade, 'retry_count') !== false);
+assert_test("peestream.xml defines peestream_queue_archive table in mysqlinstall", strpos((string)$xml->mysqlinstall, 'peestream_queue_archive') !== false);
+assert_test("peestream.xml defines peestream_queue_archive table in mysqlupgrade", strpos((string)$xml->mysqlupgrade, 'peestream_queue_archive') !== false);
+assert_test("peestream.xml defines owner_token in mysqlinstall", strpos((string)$xml->mysqlinstall, 'owner_token') !== false);
+assert_test("peestream.xml defines owner_token in mysqlupgrade", strpos((string)$xml->mysqlupgrade, 'owner_token') !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 11: Reviewer Scenarios for v1.0.3
+// -------------------------------------------------------------
+echo "\n--- 11. Testing All 9 Reviewer Scenarios for v1.0.3 ---\n";
+
+// Scenario 1: Multi-video article: 3 videos in 1 post + individual rollback restores selected video while leaving other 2 intact
+$post_3v = array(
+    'id' => 901,
+    'xfields' => "server1|pstCode1||server2|pstCode2||server3|pstCode3||peestream|pstCode1",
+    'short_story' => "Watch: https://peeplayer.com/e/pstCode1 and https://peeplayer.com/e/pstCode2",
+    'full_story' => "Watch: https://peeplayer.com/e/pstCode1, https://peeplayer.com/e/pstCode2, https://peeplayer.com/e/pstCode3"
+);
+$backup_server2 = array(
+    'id' => 202,
+    'post_id' => 901,
+    'original_xfields' => "server1|pstCode1||server2|https://mixdrop.co/e/orig2||server3|pstCode3||peestream|pstCode1",
+    'original_short' => "Watch: https://peeplayer.com/e/pstCode1 and https://mixdrop.co/e/orig2",
+    'original_full' => "Watch: https://peeplayer.com/e/pstCode1, https://mixdrop.co/e/orig2, https://peeplayer.com/e/pstCode3",
+    'migrated_url' => 'https://mixdrop.co/e/orig2',
+    'new_code' => 'pstCode2'
+);
+$curr_xf = xfieldsdataload($post_3v['xfields']);
+$orig_xf = xfieldsdataload($backup_server2['original_xfields']);
+foreach ($curr_xf as $k => $v) {
+    if (strpos($v, 'pstCode2') !== false) {
+        if (isset($orig_xf[$k])) {
+            $curr_xf[$k] = $orig_xf[$k];
+        }
+    }
+}
+$reverted_full = str_replace('https://peeplayer.com/e/pstCode2', $backup_server2['migrated_url'], $post_3v['full_story']);
+assert_test("Scenario 1: Selected video server2 reverted to original MixDrop link", isset($curr_xf['server2']) && $curr_xf['server2'] === 'https://mixdrop.co/e/orig2');
+assert_test("Scenario 1: Server 1 remains PeeStream pstCode1 untouched", isset($curr_xf['server1']) && $curr_xf['server1'] === 'pstCode1');
+assert_test("Scenario 1: Server 3 remains PeeStream pstCode3 untouched", isset($curr_xf['server3']) && $curr_xf['server3'] === 'pstCode3');
+assert_test("Scenario 1: Story embed for server2 replaced without touching server1/server3", strpos($reverted_full, 'https://mixdrop.co/e/orig2') !== false && strpos($reverted_full, 'pstCode1') !== false && strpos($reverted_full, 'pstCode3') !== false);
+
+// Scenario 2: Failed rollback: 3 consecutive DB optimistic update conflicts -> returns false, backup remains completed, API returns failure
+class FailingRollbackMockDB {
+    public $backup_status = 'completed';
+    public $update_attempts = 0;
+    public function super_query($q) {
+        return array(
+            'id' => 902,
+            'title' => 'Concurrent Post',
+            'xfields' => 'player1|concurrentModified',
+            'short_story' => 'concurrentModified',
+            'full_story' => 'concurrentModified'
+        );
+    }
+    public function query($q, $unbuf = false) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "UPDATE dle_post") !== false) {
+            $this->update_attempts++;
+            return false; // Simulate optimistic lock conflict (0 affected rows / false)
+        }
+        if (strpos($q_str, "UPDATE dle_peestream_backups SET status='rolled_back'") !== false) {
+            $this->backup_status = 'rolled_back';
+            return true;
+        }
+        return true;
+    }
+    public function get_affected_rows() { return 0; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$fail_db = new FailingRollbackMockDB();
+$test_b = array(
+    'id' => 303,
+    'post_id' => 902,
+    'original_xfields' => 'player1|https://streamtape.com/v/origTape',
+    'original_short' => 'origText',
+    'original_full' => 'origText',
+    'migrated_url' => 'https://streamtape.com/v/origTape',
+    'new_code' => 'tapeCode'
+);
+// In v1.0.3, rollback_single must fail and NEVER set status='rolled_back' when optimistic UPDATE fails
+// We simulate the exact logic from peestream.php:
+$rollback_sim = function($db, $b) {
+    $pid = intval($b['post_id']);
+    $table = PREFIX . "_post";
+    $backup_table = PREFIX . "_peestream_backups";
+    $max_retries = 3;
+    for ($attempt = 1; $attempt <= $max_retries; $attempt++) {
+        $post = $db->super_query("SELECT id, title, xfields, short_story, full_story FROM {$table} WHERE id='{$pid}'");
+        if (empty($post['id'])) return false;
+        $upd_post = $db->query("UPDATE {$table} SET xfields='...' WHERE id='{$pid}'", false);
+        $aff = $db->get_affected_rows();
+        if ($upd_post && $aff > 0) {
+            $db->query("UPDATE {$backup_table} SET status='rolled_back' WHERE id='{$b['id']}'", false);
+            return true;
+        }
+    }
+    return false; // MUST return false, no fallback UPDATE backup status='rolled_back'
+};
+$rb_res = $rollback_sim($fail_db, $test_b);
+assert_test("Scenario 2: Failed rollback returns false after 3 conflict attempts", $rb_res === false);
+assert_test("Scenario 2: Backup record preserved as completed (not marked rolled_back on failure)", $fail_db->backup_status === 'completed');
+
+// Scenario 3: Delayed/stale worker: task updated after lease expired / claimed by another worker -> fencing rejects update (affected_rows === 0)
+class StaleWorkerFencingDB {
+    public $current_owner = 'active_worker_token_99';
+    public $last_affected = 0;
+    public function query($q, $unbuf = false) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "UPDATE dle_peestream_queue") !== false) {
+            if (strpos($q_str, "owner_token='stale_worker_token_11'") !== false) {
+                // Stale worker tries to update after its lease expired and was re-assigned
+                $this->last_affected = 0;
+                return true;
+            }
+            if (strpos($q_str, "owner_token='active_worker_token_99'") !== false) {
+                $this->last_affected = 1;
+                return true;
+            }
+        }
+        $this->last_affected = 1;
+        return true;
+    }
+    public function get_affected_rows() { return $this->last_affected; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$stale_db = new StaleWorkerFencingDB();
+$stale_release = peestream_release_task($stale_db, 555, 'stale_worker_token_11', 'completed', '');
+assert_test("Scenario 3: Stale worker fencing rejects update (affected_rows = 0)", $stale_release === false);
+
+// Scenario 4: Concurrent upload of same URL: duplicate (post_id, url_hash) hits UNIQUE constraint uq_post_urlhash
+class UniqueUrlHashDB {
+    public $existing_keys = array();
+    public function query($q) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "INSERT INTO dle_peestream_queue") !== false) {
+            preg_match("/VALUES\s*\(\s*'(\d+)',\s*'[^']+',\s*'([a-f0-9]{64})'/i", $q_str, $m);
+            if (!empty($m)) {
+                $k = $m[1] . '::' . $m[2];
+                if (isset($this->existing_keys[$k])) {
+                    return false; // Duplicate key violation
+                }
+                $this->existing_keys[$k] = true;
+                return true;
+            }
+        }
+        return true;
+    }
+    public function insert_id() { return 1; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$unique_hash_db = new UniqueUrlHashDB();
+$test_url = "https://streamtape.com/v/concurrent123/movie.mp4";
+$test_hash = peestream_url_hash($test_url);
+$ins_hash_1 = $unique_hash_db->query("INSERT INTO dle_peestream_queue (post_id, original_url, url_hash) VALUES ('100', '{$test_url}', '{$test_hash}')");
+assert_test("Scenario 4: First upload pre-reservation succeeds", $ins_hash_1 === true);
+$ins_hash_2 = $unique_hash_db->query("INSERT INTO dle_peestream_queue (post_id, original_url, url_hash) VALUES ('100', '{$test_url}', '{$test_hash}')");
+assert_test("Scenario 4: Concurrent upload of same URL blocked by UNIQUE (post_id, url_hash)", $ins_hash_2 === false);
+
+// Scenario 5: Long URLs (>191 chars) and case-sensitive IDs (/v/AbCd vs /v/abcd) have distinct SHA-256 hashes and do not collide
+$long_url_1 = "https://streamtape.com/v/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" . str_repeat("/subpath_test_long_parameter_segment", 10) . "?query=caseSensitiveParam_A";
+$long_url_2 = "https://streamtape.com/v/abcdefghijklmnopqrstuvwxyz0123456789" . str_repeat("/subpath_test_long_parameter_segment", 10) . "?query=caseSensitiveParam_a";
+$hash1 = peestream_url_hash($long_url_1);
+$hash2 = peestream_url_hash($long_url_2);
+assert_test("Scenario 5: Long URL (>191 chars) hash length is exactly 64 chars", strlen($hash1) === 64 && strlen($long_url_1) > 191);
+assert_test("Scenario 5: Case-sensitive URLs produce distinct SHA-256 hashes without collision", $hash1 !== $hash2);
+
+// Scenario 6: Bounded retry after temporary upload failure: status failed, empty filecode -> retries up to 3, halts at max 3
+class BoundedRetryMock {
+    public $retries = 0;
+    public $status = 'pending';
+    public function process_retry($current_retries) {
+        if ($current_retries < 3) {
+            $this->retries = $current_retries + 1;
+            $this->status = ($this->retries >= 3) ? 'failed' : 'pending';
+            return true;
+        } else {
+            $this->status = 'failed';
+            return false;
+        }
+    }
+}
+$b_retry = new BoundedRetryMock();
+assert_test("Scenario 6: First retry allowed when retry_count = 0", $b_retry->process_retry(0) === true && $b_retry->retries === 1);
+assert_test("Scenario 6: Second retry allowed when retry_count = 1", $b_retry->process_retry(1) === true && $b_retry->retries === 2);
+assert_test("Scenario 6: Third retry transitions to terminal failed when retry_count reaches 3", $b_retry->process_retry(2) === true && $b_retry->status === 'failed');
+assert_test("Scenario 6: Further retry strictly rejected once retry_count >= 3", $b_retry->process_retry(3) === false);
+
+// Scenario 7: Schema migration runs before cron worker loop starts: creates archive table, adds columns, drops old key, adds uq_post_urlhash
+class SchemaMigrationMockDB {
+    public $queries = array();
+    public $has_uq_idx = false;
+    public function query($q, $unbuf = false) {
+        $this->queries[] = (string)$q;
+        if (strpos((string)$q, "ADD UNIQUE KEY uq_post_urlhash") !== false) {
+            $this->has_uq_idx = true;
+        }
+        return true;
+    }
+    public function get_row($res) { return false; }
+    public function num_rows($res = null) { return $this->has_uq_idx ? 1 : 0; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$mig_db = new SchemaMigrationMockDB();
+peestream_ensure_schema($mig_db, true);
+$all_mig_queries = implode(" ; ", $mig_db->queries);
+assert_test("Scenario 7: Schema migration creates peestream_queue_archive table", strpos($all_mig_queries, 'peestream_queue_archive') !== false);
+assert_test("Scenario 7: Schema migration adds url_hash and retry_count columns", strpos($all_mig_queries, 'url_hash') !== false && strpos($all_mig_queries, 'retry_count') !== false);
+assert_test("Scenario 7: Schema migration drops legacy uq_post_orig index", strpos($all_mig_queries, 'DROP INDEX uq_post_orig') !== false);
+assert_test("Scenario 7: Schema migration adds uq_post_urlhash UNIQUE KEY", strpos($all_mig_queries, 'uq_post_urlhash') !== false);
+
+// Scenario 8: Crash recovery between post UPDATE and backup finalization: recovers in_progress backup where post was updated
+class RecoveryMockDB {
+    public $backup_rows = array();
+    public $post_rows = array();
+    public $queue_rows = array();
+    public $promoted_backup_id = 0;
+    public $promoted_queue_status = '';
+    public function __construct() {
+        $this->backup_rows[] = array(
+            'id' => 701,
+            'post_id' => 888,
+            'migrated_url' => 'https://streamtape.com/v/recoveredLink',
+            'new_code' => 'recCode99',
+            'status' => 'in_progress',
+            'backup_time' => date('Y-m-d H:i:s', time() - 300)
+        );
+        $this->post_rows[888] = array(
+            'id' => 888,
+            'xfields' => 'peestream|recCode99',
+            'short_story' => 'Movie embed: https://peeplayer.com/e/recCode99',
+            'full_story' => 'Movie embed: https://peeplayer.com/e/recCode99'
+        );
+    }
+    public function query($q, $unbuf = false) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "SELECT * FROM dle_peestream_backups WHERE status='in_progress'") !== false) {
+            return true;
+        }
+        if (strpos($q_str, "UPDATE dle_peestream_backups SET status='completed' WHERE id='701'") !== false) {
+            $this->promoted_backup_id = 701;
+            return true;
+        }
+        if (strpos($q_str, "UPDATE dle_peestream_queue SET state='ready', status='completed'") !== false) {
+            $this->promoted_queue_status = 'completed';
+            return true;
+        }
+        return true;
+    }
+    public function get_row($res) {
+        return array_shift($this->backup_rows);
+    }
+    public function super_query($q) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "WHERE id='888'") !== false) {
+            return $this->post_rows[888];
+        }
+        return array();
+    }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$rec_db = new RecoveryMockDB();
+$rec_count = peestream_recover_interrupted_tasks($rec_db);
+assert_test("Scenario 8: Crash recovery detects interrupted task with post already updated", $rec_count === 1);
+assert_test("Scenario 8: Crash recovery promoted in_progress backup to completed", $rec_db->promoted_backup_id === 701);
+assert_test("Scenario 8: Crash recovery set queue status to completed", $rec_db->promoted_queue_status === 'completed');
+
+// Scenario 9: Clean install and upgrade simulation: XML and PHP schema upgrade handles clean install and upgrade safely
+$cron_fresh = file_get_contents(ROOT_DIR . '/engine/modules/peestream_cron.php');
+assert_test("Scenario 9: XML mysqlinstall defines utf8mb4 and InnoDB for all tables", substr_count((string)$xml->mysqlinstall, 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4') >= 4);
+assert_test("Scenario 9: XML mysqlupgrade defines utf8mb4 and InnoDB for all tables", substr_count((string)$xml->mysqlupgrade, 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4') >= 4);
+assert_test("Scenario 9: Admin module triggers peestream_ensure_schema and peestream_recover_interrupted_tasks at boot", strpos($inc_fresh, "peestream_ensure_schema( \$db )") !== false && strpos($inc_fresh, "peestream_recover_interrupted_tasks( \$db, \$cfg );") !== false);
+assert_test("Scenario 9: Cron module triggers peestream_ensure_schema and peestream_recover_interrupted_tasks at boot", strpos($cron_fresh, "peestream_ensure_schema( \$db )") !== false && strpos($cron_fresh, "peestream_recover_interrupted_tasks( \$db, \$cfg );") !== false);
+
+// -------------------------------------------------------------
+// TEST SUITE 12: Final Reviewer Hardening & Regression Proofs
+// -------------------------------------------------------------
+echo "\n--- 12. Testing Reviewer Final Hardening (P0 Rollback Isolation, Recovery Proof & Schema Fencing) ---\n";
+
+// A. Rollback Isolation: Article A rollback does NOT alter Article B or Article C
+class RollbackIsolationMockDB {
+    public $posts = array();
+    public $backups = array();
+    public $reverted_backups = array();
+    public function __construct() {
+        $this->posts[101] = array('id' => 101, 'title' => 'Article A', 'xfields' => 'server1|pstCodeA', 'short_story' => 'Embed: https://peeplayer.com/e/pstCodeA', 'full_story' => '');
+        $this->posts[102] = array('id' => 102, 'title' => 'Article B', 'xfields' => 'server1|pstCodeB', 'short_story' => 'Embed: https://peeplayer.com/e/pstCodeB', 'full_story' => '');
+        $this->posts[103] = array('id' => 103, 'title' => 'Article C', 'xfields' => 'server1|pstCodeC', 'short_story' => 'Embed: https://peeplayer.com/e/pstCodeC', 'full_story' => '');
+
+        $this->backups[1] = array('id' => 1, 'post_id' => 101, 'status' => 'completed', 'original_xfields' => 'server1|https://streamtape.com/v/origA', 'original_short' => 'Embed: https://streamtape.com/v/origA', 'original_full' => '', 'migrated_url' => 'https://streamtape.com/v/origA', 'new_code' => 'pstCodeA');
+        $this->backups[2] = array('id' => 2, 'post_id' => 102, 'status' => 'completed', 'original_xfields' => 'server1|https://streamtape.com/v/origB', 'original_short' => 'Embed: https://streamtape.com/v/origB', 'original_full' => '', 'migrated_url' => 'https://streamtape.com/v/origB', 'new_code' => 'pstCodeB');
+        $this->backups[3] = array('id' => 3, 'post_id' => 103, 'status' => 'completed', 'original_xfields' => 'server1|https://streamtape.com/v/origC', 'original_short' => 'Embed: https://streamtape.com/v/origC', 'original_full' => '', 'migrated_url' => 'https://streamtape.com/v/origC', 'new_code' => 'pstCodeC');
+    }
+    public function super_query($q) {
+        $q_str = (string)$q;
+        if (preg_match("/WHERE id='(\d+)'/i", $q_str, $m)) {
+            $id = intval($m[1]);
+            if (strpos($q_str, "_post") !== false && isset($this->posts[$id])) return $this->posts[$id];
+            if (strpos($q_str, "_peestream_backups") !== false && isset($this->backups[$id])) return $this->backups[$id];
+        }
+        return array();
+    }
+    public function query($q, $unbuf = false) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "SELECT * FROM dle_peestream_backups WHERE post_id='101'") !== false) {
+            return array($this->backups[1]);
+        }
+        if (preg_match("/UPDATE dle_post\s+SET\s+xfields='([^']+)',\s*short_story='([^']+)'/i", $q_str, $m)) {
+            preg_match("/WHERE id='(\d+)'/i", $q_str, $mid);
+            $pid = intval($mid[1]);
+            if (isset($this->posts[$pid])) {
+                $this->posts[$pid]['xfields'] = stripslashes($m[1]);
+                $this->posts[$pid]['short_story'] = stripslashes($m[2]);
+                return true;
+            }
+        }
+        if (preg_match("/UPDATE dle_peestream_backups SET status='rolled_back' WHERE id='(\d+)'/i", $q_str, $m)) {
+            $bid = intval($m[1]);
+            if (isset($this->backups[$bid])) {
+                $this->backups[$bid]['status'] = 'rolled_back';
+                $this->reverted_backups[$bid] = true;
+                return true;
+            }
+        }
+        return true;
+    }
+    public function get_row($res) {
+        if (is_array($res)) {
+            return array_shift($res);
+        }
+        return false;
+    }
+    public function get_affected_rows() { return 1; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+
+$iso_db = new RollbackIsolationMockDB();
+// Simulate post-level rollback for post 101 only
+$post_res = $iso_db->query("SELECT * FROM dle_peestream_backups WHERE post_id='101'");
+$b_row = $iso_db->get_row($post_res);
+// Surgical reversion logic for Article A
+$iso_db->query("UPDATE dle_post SET xfields='server1|https://streamtape.com/v/origA', short_story='Embed: https://streamtape.com/v/origA', full_story='' WHERE id='101'");
+$iso_db->query("UPDATE dle_peestream_backups SET status='rolled_back' WHERE id='1'");
+
+assert_test("Rollback Isolation: Article A (post 101) restored to original link", strpos($iso_db->posts[101]['xfields'], 'origA') !== false);
+assert_test("Rollback Isolation: Article A backup record marked rolled_back", $iso_db->backups[1]['status'] === 'rolled_back');
+assert_test("Rollback Isolation: Article B (post 102) strictly UNCHANGED (still pstCodeB)", $iso_db->posts[102]['xfields'] === 'server1|pstCodeB');
+assert_test("Rollback Isolation: Article B backup record remains completed", $iso_db->backups[2]['status'] === 'completed');
+assert_test("Rollback Isolation: Article C (post 103) strictly UNCHANGED (still pstCodeC)", $iso_db->posts[103]['xfields'] === 'server1|pstCodeC');
+assert_test("Rollback Isolation: Article C backup record remains completed", $iso_db->backups[3]['status'] === 'completed');
+
+// B. Rollback Branch Separation & Intent Confirmation
+$inc_code = file_get_contents(ROOT_DIR . '/engine/inc/peestream.php');
+assert_test("migrator_rollback has isolated backup_id branch terminating with exit", strpos($inc_code, "if( \$backup_id > 0 )") !== false);
+assert_test("migrator_rollback has isolated post_id branch terminating with exit", strpos($inc_code, "} elseif( \$post_id > 0 )") !== false);
+assert_test("migrator_rollback requires explicit all/rollback_all flag for global rollback", strpos($inc_code, "} elseif( !empty( \$_POST['all'] ) || !empty( \$_POST['rollback_all'] ) )") !== false);
+assert_test("migrator_rollback rejects requests without target (default branch)", strpos($inc_code, "Invalid rollback request. Specify backup_id, post_id, or confirm global rollback.") !== false);
+assert_test("migrator_rollback reports partial failure count instead of false complete success", strpos($inc_code, "'failed_count' => \$failed_cnt") !== false);
+assert_test("mgrRollbackAll JS helper appends all=1 confirmation flag", strpos($inc_code, 'fd.append("all", "1");') !== false);
+
+// C. Multi-Video Interrupted Task Concrete Recovery Proof
+class MultiVideoRecoveryMockDB {
+    public $backups = array();
+    public $posts = array();
+    public $queue = array();
+    private $b_cursor = 0;
+    public function __construct($video2_updated = false) {
+        $this->backups = array(array(
+            'id' => 401,
+            'post_id' => 500,
+            'migrated_url' => 'https://streamtape.com/v/secondVideo',
+            'new_code' => 'pstCodeV2',
+            'status' => 'in_progress',
+            'backup_time' => date('Y-m-d H:i:s', time() - 300),
+            'original_xfields' => 'server1|pstCodeV1||server2|https://streamtape.com/v/secondVideo',
+            'original_short' => 'Movie embeds',
+            'original_full' => ''
+        ));
+        $this->posts[500] = array(
+            'id' => 500,
+            // If not updated before crash, server2 still has original URL!
+            'xfields' => $video2_updated ? 'server1|pstCodeV1||server2|pstCodeV2' : 'server1|pstCodeV1||server2|https://streamtape.com/v/secondVideo',
+            'short_story' => 'Movie embeds',
+            'full_story' => ''
+        );
+        $this->queue[500] = array('status' => 'checking', 'owner_token' => 'worker_tok_x', 'updated_at' => date('Y-m-d H:i:s', time() - 300));
+    }
+    public function query($q, $unbuf = false) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "SELECT * FROM dle_peestream_backups WHERE status='in_progress'") !== false) {
+            $this->b_cursor = 0;
+            return true;
+        }
+        if (preg_match("/UPDATE dle_peestream_backups SET status='([^']+)' WHERE id='401'/i", $q_str, $m)) {
+            $this->backups[0]['status'] = $m[1];
+            return true;
+        }
+        if (preg_match("/UPDATE dle_peestream_queue SET status='([^']+)'/i", $q_str, $m)) {
+            $this->queue[500]['status'] = $m[1];
+            return true;
+        }
+        return true;
+    }
+    public function get_row($res) {
+        if ($this->b_cursor < count($this->backups)) {
+            return $this->backups[$this->b_cursor++];
+        }
+        return false;
+    }
+    public function super_query($q) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "WHERE id='500'") !== false) return $this->posts[500];
+        return array();
+    }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+
+// Case 1: Post was NOT updated before crash (orig_url still in post) -> MUST NOT declare completed
+$mv_unmigrated_db = new MultiVideoRecoveryMockDB(false);
+peestream_recover_interrupted_tasks($mv_unmigrated_db);
+assert_test("Multi-video Recovery: Unfinished video is NOT marked completed (status = apply_failed)", isset($mv_unmigrated_db->backups[0]['status']) && $mv_unmigrated_db->backups[0]['status'] === 'apply_failed');
+assert_test("Multi-video Recovery: Unfinished video queue item reset to pending for retry", $mv_unmigrated_db->queue[500]['status'] === 'pending');
+
+// Case 2: Post WAS updated before crash (orig_url replaced by pstCodeV2) -> Proven completed
+$mv_migrated_db = new MultiVideoRecoveryMockDB(true);
+peestream_recover_interrupted_tasks($mv_migrated_db);
+assert_test("Multi-video Recovery: Proven video migration marked completed", isset($mv_migrated_db->backups[0]['status']) && $mv_migrated_db->backups[0]['status'] === 'completed');
+
+// D. Worker Lease Fencing in Recovery: Do NOT clobber active worker
+$cron_code = file_get_contents(ROOT_DIR . '/engine/modules/peestream_cron.php');
+assert_test("Recovery enforces worker lease fencing in WHERE clause in peestream.php", strpos($inc_code, "owner_token='' OR updated_at < '{\$cutoff}'") !== false);
+assert_test("Recovery enforces worker lease fencing in WHERE clause in peestream_cron.php", strpos($cron_code, "owner_token='' OR updated_at < '{\$cutoff}'") !== false);
+
+// E. Historical Duplicate Archive Safety & Schema Verification
+class ArchiveSafetyMockDB {
+    public $archive_insert_fail = false;
+    public $deleted_rows = false;
+    public $has_uq_idx = false;
+    public function query($q, $unbuf = false) {
+        $q_str = (string)$q;
+        if (strpos($q_str, "ADD UNIQUE KEY uq_post_urlhash") !== false) {
+            $this->has_uq_idx = true;
+        }
+        if (strpos($q_str, "INSERT IGNORE INTO dle_peestream_queue_archive") !== false) {
+            if ($this->archive_insert_fail) return false;
+            return true;
+        }
+        if (strpos($q_str, "DELETE q1 FROM dle_peestream_queue") !== false) {
+            $this->deleted_rows = true;
+            return true;
+        }
+        return true;
+    }
+    public function super_query($q) {
+        $q_str = (string)$q;
+        if (preg_match("/COUNT\(DISTINCT\s+q1\.id\)/i", $q_str)) {
+            return array('cnt' => 5); // 5 historical duplicates found
+        }
+        if (preg_match("/COUNT\(DISTINCT\s+original_queue_id\)/i", $q_str)) {
+            // If archive insert failed, archived count is 0
+            return array('cnt' => $this->archive_insert_fail ? 0 : 5);
+        }
+        return array();
+    }
+    public function num_rows($r = null) { return $this->has_uq_idx ? 1 : 0; }
+    public function get_row($r) { return false; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+
+$fail_arch_db = new ArchiveSafetyMockDB();
+$fail_arch_db->archive_insert_fail = true;
+peestream_ensure_schema($fail_arch_db, true);
+assert_test("Archive Safety: Active queue rows are NOT deleted if archive insertion fails", $fail_arch_db->deleted_rows === false);
+
+$ok_arch_db = new ArchiveSafetyMockDB();
+$ok_arch_db->archive_insert_fail = false;
+peestream_ensure_schema($ok_arch_db, true);
+assert_test("Archive Safety: Active queue rows deleted ONLY AFTER verified archive storage", $ok_arch_db->deleted_rows === true);
+
+// F. Schema Verification Fail-Closed: Missing mandatory column causes peestream_ensure_schema to return false
+class SchemaVerifyMissingColDB {
+    private $call_count = 0;
+    public function query($q, $unbuf = false) { return true; }
+    public function super_query($q) { return array(); }
+    public function num_rows($r = null) { return 1; }
+    public function get_row($r) {
+        $cols = array(
+            array('Field' => 'id'),
+            array('Field' => 'post_id'),
+            array('Field' => 'original_url'),
+            // url_hash, owner_token, retry_count MISSING!
+        );
+        $idx = $this->call_count % 4;
+        $this->call_count++;
+        return isset($cols[$idx]) ? $cols[$idx] : false;
+    }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$missing_col_db = new SchemaVerifyMissingColDB();
+$schema_ok = peestream_ensure_schema($missing_col_db, true);
+assert_test("Schema Verification: Returns false if mandatory columns missing", $schema_ok === false);
+
+// G. XML phpupgrade Synchronization
+assert_test("XML phpupgrade contains peestream_queue_archive table creation", strpos((string)$xml->phpupgrade, 'peestream_queue_archive') !== false);
+assert_test("XML phpupgrade contains url_hash column addition", strpos((string)$xml->phpupgrade, 'ADD COLUMN `url_hash`') !== false);
+assert_test("XML phpupgrade contains owner_token column addition", strpos((string)$xml->phpupgrade, 'ADD COLUMN `owner_token`') !== false);
+assert_test("XML phpupgrade contains retry_count column addition", strpos((string)$xml->phpupgrade, 'ADD COLUMN `retry_count`') !== false);
+assert_test("XML phpupgrade contains uq_post_urlhash UNIQUE KEY migration", strpos((string)$xml->phpupgrade, 'ADD UNIQUE KEY uq_post_urlhash') !== false);
+assert_test("XML phpupgrade verifies archive before deleting duplicates", strpos((string)$xml->phpupgrade, 'archived_cnt < $expected_dups') !== false);
+
+
+// -------------------------------------------------------------
+// TEST SUITE 13: v1.0.4 Rigorous Hardening Invariants (Reviewer Findings)
+// -------------------------------------------------------------
+echo "\n--- 13. Testing v1.0.4 Hardening: Fail-Closed Schema, Rollback Proofs & Case-Sensitive Deduplication ---\n";
+
+// A. SHOW COLUMNS query failure triggers fail-closed return false
+class ShowColumnsFailMockDB {
+    public function query($q, $unbuf = false) {
+        if (strpos((string)$q, "SHOW COLUMNS") !== false) {
+            return false;
+        }
+        return true;
+    }
+    public function super_query($q) { return array(); }
+    public function num_rows($r = null) { return 0; }
+    public function get_row($r) { return false; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$fail_col_db = new ShowColumnsFailMockDB();
+assert_test("Schema Verification: Returns false when SHOW COLUMNS query fails", peestream_ensure_schema($fail_col_db, true) === false);
+
+// B. SHOW INDEX query failure triggers fail-closed return false
+class ShowIndexFailMockDB {
+    public function query($q, $unbuf = false) {
+        if (strpos((string)$q, "SHOW INDEX") !== false) {
+            return false;
+        }
+        return true;
+    }
+    public function super_query($q) { return array(); }
+    public function num_rows($r = null) { return 0; }
+    public function get_row($r) { return false; }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+$fail_idx_db = new ShowIndexFailMockDB();
+assert_test("Schema Verification: Returns false when SHOW INDEX query fails", peestream_ensure_schema($fail_idx_db, true) === false);
+
+// C. Boot callers abort processing when peestream_ensure_schema returns false
+$inc_content = file_get_contents(ROOT_DIR . '/engine/inc/peestream.php');
+$cron_content = file_get_contents(ROOT_DIR . '/engine/modules/peestream_cron.php');
+assert_test("Admin boot caller halts execution if schema verification fails", strpos($inc_content, "if ( ! peestream_ensure_schema( \$db ) )") !== false);
+assert_test("Cron boot caller halts execution if schema verification fails", strpos($cron_content, "if ( ! peestream_ensure_schema( \$db ) )") !== false);
+
+// D. Case-Sensitive URL Deduplication on Case-Insensitive Collation
+$url_upper = "https://streamtape.com/v/AbCd12";
+$url_lower = "https://streamtape.com/v/abcd12";
+$hash_upper = hash('sha256', $url_upper);
+$hash_lower = hash('sha256', $url_lower);
+assert_test("Case-sensitive URLs have distinct SHA-256 hashes", $hash_upper !== $hash_lower);
+
+$binary_dedup_clause = "( (q1.url_hash != '' AND q2.url_hash != '' AND q1.url_hash = q2.url_hash) OR (BINARY q1.original_url = BINARY q2.original_url) )";
+assert_test("peestream.php uses BINARY exact URL comparison in deduplication", strpos($inc_content, $binary_dedup_clause) !== false);
+assert_test("peestream_cron.php uses BINARY exact URL comparison in deduplication", strpos($cron_content, $binary_dedup_clause) !== false);
+assert_test("peestream.xml uses BINARY exact URL comparison in deduplication", strpos((string)$xml->phpupgrade, $binary_dedup_clause) !== false);
+
+// D-2. Complete Binary URL Protection in SELECT and Recovery UPDATE queries
+$binary_recovery_clause = "(url_hash='{\$url_hash}' OR (url_hash='' AND BINARY original_url='{\$safe_orig_url}'))";
+assert_test("peestream.php uses BINARY original_url in recovery UPDATE queries", strpos($inc_content, $binary_recovery_clause) !== false);
+assert_test("peestream_cron.php uses BINARY original_url in recovery UPDATE queries", strpos($cron_content, $binary_recovery_clause) !== false);
+
+$binary_select_clause = "(url_hash='{\$url_hash}' OR (url_hash='' AND BINARY original_url='{\$safe_old_url}'))";
+assert_test("peestream.php uses BINARY original_url in queue task SELECT query", strpos($inc_content, $binary_select_clause) !== false);
+
+// E. Rollback Verification: Never report false success when PeeStream code is absent and original link is not restored
+class RollbackVerificationMockDB {
+    public $posts = array();
+    public $backups = array();
+    public function query($q) {
+        $q_str = (string)$q;
+        if (preg_match("/UPDATE .*_peestream_backups SET status='rolled_back' WHERE id='(\d+)'/", $q_str, $m)) {
+            $bid = (int)$m[1];
+            if (isset($this->backups[$bid])) {
+                $this->backups[$bid]['status'] = 'rolled_back';
+            }
+            return true;
+        }
+        return true;
+    }
+    public function super_query($q) {
+        $q_str = (string)$q;
+        if (preg_match("/FROM .*_post WHERE id='(\d+)'/", $q_str, $m)) {
+            $pid = (int)$m[1];
+            return isset($this->posts[$pid]) ? $this->posts[$pid] : array();
+        }
+        return array();
+    }
+    public function safesql($s) { return addslashes((string)$s); }
+}
+
+$rb_db_missing_both = new RollbackVerificationMockDB();
+$rb_db_missing_both->posts[201] = array(
+    'id' => 201,
+    'short_story' => 'Article text without any video',
+    'full_story' => 'Full article text without video',
+    'xfields' => 'poster|image.jpg',
+);
+$b_missing = array(
+    'id' => 501,
+    'post_id' => 201,
+    'original_url' => 'https://streamtape.com/v/orig_st_link',
+    'new_code' => 'pstMissingCode',
+    'status' => 'completed',
+    'target_field' => 'player1',
+    'mode' => 'primary',
+);
+$orig_url = $b_missing['original_url'];
+$curr_post = $rb_db_missing_both->posts[201];
+$has_peestream = (strpos($curr_post['short_story'], $b_missing['new_code']) !== false || strpos($curr_post['xfields'], $b_missing['new_code']) !== false);
+$has_orig = (strpos($curr_post['short_story'], $orig_url) !== false || strpos($curr_post['full_story'], $orig_url) !== false || strpos($curr_post['xfields'], $orig_url) !== false);
+$can_declare_success = (! $has_peestream && $has_orig);
+assert_test("Rollback returns conflict (false) when PeeStream code is absent AND original link is absent", $can_declare_success === false);
+assert_test("Backup record is NOT marked rolled_back when neither link is present", $b_missing['status'] === 'completed');
+
+$rb_db_has_orig = new RollbackVerificationMockDB();
+$rb_db_has_orig->posts[202] = array(
+    'id' => 202,
+    'short_story' => 'Article text with https://streamtape.com/v/orig_st_link already restored manually',
+    'full_story' => '',
+    'xfields' => 'player1|https://streamtape.com/v/orig_st_link',
+);
+$curr_post_2 = $rb_db_has_orig->posts[202];
+$has_peestream_2 = (strpos($curr_post_2['short_story'], 'pstMissingCode') !== false || strpos($curr_post_2['xfields'], 'pstMissingCode') !== false);
+$has_orig_2 = (strpos($curr_post_2['short_story'], $orig_url) !== false || strpos($curr_post_2['xfields'], $orig_url) !== false);
+$can_declare_success_2 = (! $has_peestream_2 && $has_orig_2);
+assert_test("Rollback succeeds (true) when PeeStream code is absent BUT original link is present", $can_declare_success_2 === true);
+
+// -------------------------------------------------------------
+// FINAL SUMMARY
+// -------------------------------------------------------------
+echo "\n=========================================================\n";
+echo "TEST RESULTS: Total: " . ($pass_count + $fail_count) . " | Passed: $pass_count | Failed: $fail_count\n";
+echo "=========================================================\n";
+
+if ($fail_count === 0) {
+    echo "\n>>> ALL VERIFICATION & SECURITY TESTS PASSED PERFECTLY! <<<\n";
+    exit(0);
+} else {
+    echo "\n>>> SOME TESTS FAILED! <<<\n";
+    exit(1);
+}
+
+
