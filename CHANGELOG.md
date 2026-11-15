@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.0.5-beta.2] - 2026-11-15
+
+### Fixed
+- Release packaging integrity: the tag `v1.0.5-beta.1` tracked `dist/dle_peestream_v1.0.5-beta.1.zip` with SHA-256 `f304f70c...`, which contradicts the `SHA256SUMS` entry and the published release asset (`f573af24...`). `v1.0.5-beta.2` rebuilds the archive from the tagged sources and removes the stale tracked artifact.
+
+### Added
+- `scripts/build-release.sh` - byte-reproducible ZIP build (fixed timestamps, manifest-derived allowlist, explicit deflate level) that writes `dist/` and refreshes `SHA256SUMS`.
+
+### Changed
+- No functional code changes; webhook, identity mapping, and cron code is unchanged from `v1.0.5-beta.1`.
+
+---
+
 ## [1.0.5-beta.1] - 2026-11-15
 
 ### Added

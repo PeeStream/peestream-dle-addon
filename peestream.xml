@@ -3,7 +3,7 @@
 	<name>PeeStream Player &amp; Tools</name>
 	<description>Official PeeStream high-performance video player, upload tools and safe competitor auto-migrator for DataLife Engine.</description>
 	<icon>engine/skins/images/peestream/icon.png</icon>
-	<version>1.0.5</version>
+	<version>1.0.5-beta.2</version>
 	<dleversion>13.0</dleversion>
 	<versioncompare>greater</versioncompare>
 	<upgradeurl></upgradeurl>

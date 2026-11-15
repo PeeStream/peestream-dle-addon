@@ -9,7 +9,7 @@
 Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `https://peeplayer.com`). Seamlessly embed high-performance HLS video streams, upload remote videos directly from your article editor, synchronize TV episodes automatically via webhooks, and safely migrate links from failing third-party hosters.
 
 > [!WARNING]
-> **BETA RELEASE (v1.0.5-beta.1) - NOT PRODUCTION TESTED**
+> **BETA RELEASE (v1.0.5-beta.2) - NOT PRODUCTION TESTED**
 > Compatibility across DLE 13.0 - 17.3+ is expected based on architecture review, DLE manifest specification, and extensive automated harness simulations (255 tests passed). Live CMS End-to-End runtime testing on an active DLE installation has **NOT BEEN RUN**. Installation is recommended exclusively on staging/testing sites. Always make a full database backup before running migrations. Please report any issues along with your CMS, PHP, and database versions.
 
 ---
@@ -69,7 +69,7 @@ Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `htt
 ## Installation Guide
 
 ### Method A: DLE Plugin Manager (Recommended)
-1. Download `dle_peestream_v1.0.5-beta.1.zip` from the official GitHub Releases page and extract the files.
+1. Download `dle_peestream_v1.0.5-beta.2.zip` from the official GitHub Releases page and extract the files.
 2. In your DLE Administration Panel, navigate to **Plugin Management** (`?mod=plugins`).
 3. Click **Upload Plugin** and select `peestream.xml`.
 4. Upload the `engine/` and `language/` directories to your server root (if not automatically extracted).
