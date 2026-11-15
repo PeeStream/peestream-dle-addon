@@ -41,7 +41,15 @@ $cfg = array_merge( array(
 	'autoplay' => '0',
 	'allow_fullscreen' => '1',
 	'xfield_name' => 'peestream',
+	'xfield_imdb' => 'imdb',
+	'xfield_tmdb' => 'tmdb',
+	'xfield_tmdb_series' => 'tmdb_series_id',
+	'xfield_season' => 'season',
+	'xfield_episode' => 'episode',
+	'xfield_player' => 'player_embed',
+	'xfield_source_code' => 'peestream_code',
 	'webhook_secret' => '',
+	'site_id' => '',
 	'cron_secret' => '',
 	'auto_create_news' => '0',
 	'default_category' => '1',
@@ -1398,7 +1406,15 @@ if( $action === 'save' ) {
 			'autoplay' => isset( $_POST['autoplay'] ) ? '1' : '0',
 			'allow_fullscreen' => isset( $_POST['allow_fullscreen'] ) ? '1' : '0',
 			'xfield_name' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)$_POST['xfield_name'] ) ) ),
+			'xfield_imdb' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)( $_POST['xfield_imdb'] ?? 'imdb' ) ) ) ),
+			'xfield_tmdb' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)( $_POST['xfield_tmdb'] ?? 'tmdb' ) ) ) ),
+			'xfield_tmdb_series' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)( $_POST['xfield_tmdb_series'] ?? 'tmdb_series_id' ) ) ) ),
+			'xfield_season' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)( $_POST['xfield_season'] ?? 'season' ) ) ) ),
+			'xfield_episode' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)( $_POST['xfield_episode'] ?? 'episode' ) ) ) ),
+			'xfield_player' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)( $_POST['xfield_player'] ?? 'player_embed' ) ) ) ),
+			'xfield_source_code' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', strtolower( trim( (string)( $_POST['xfield_source_code'] ?? 'peestream_code' ) ) ) ),
 			'webhook_secret' => $secret,
+			'site_id' => preg_replace( '/[^a-zA-Z0-9_\-]/', '', trim( (string)( isset( $_POST['site_id'] ) ? $_POST['site_id'] : ( $cfg['site_id'] ?? '' ) ) ) ),
 			'cron_secret' => $cron_sec,
 			'auto_create_news' => isset( $_POST['auto_create_news'] ) ? '1' : '0',
 			'default_category' => intval( $_POST['default_category'] ) ?: 1,
@@ -1408,6 +1424,12 @@ if( $action === 'save' ) {
 		if( empty( $save_cfg['player_domain'] ) ) $save_cfg['player_domain'] = 'https://peeplayer.com';
 		if( empty( $save_cfg['api_domain'] ) ) $save_cfg['api_domain'] = 'https://peestream.com';
 		if( empty( $save_cfg['xfield_name'] ) ) $save_cfg['xfield_name'] = 'peestream';
+		if( empty( $save_cfg['xfield_imdb'] ) ) $save_cfg['xfield_imdb'] = 'imdb';
+		if( empty( $save_cfg['xfield_tmdb'] ) ) $save_cfg['xfield_tmdb'] = 'tmdb';
+		if( empty( $save_cfg['xfield_tmdb_series'] ) ) $save_cfg['xfield_tmdb_series'] = 'tmdb_series_id';
+		if( empty( $save_cfg['xfield_season'] ) ) $save_cfg['xfield_season'] = 'season';
+		if( empty( $save_cfg['xfield_episode'] ) ) $save_cfg['xfield_episode'] = 'episode';
+		if( empty( $save_cfg['xfield_source_code'] ) ) $save_cfg['xfield_source_code'] = 'peestream_code';
 		if( empty( $save_cfg['aspect_ratio'] ) ) $save_cfg['aspect_ratio'] = '16:9';
 		
 		$conf_content = "<?PHP\n\n// PeeStream DLE Addon Configuration\n// Last updated: " . date( "d.m.Y H:i:s" ) . "\n\n\$peestream_config = array (\n";
@@ -1486,12 +1508,20 @@ $val_api_key = htmlspecialchars( $cfg['api_key'], ENT_QUOTES, 'UTF-8' );
 $val_player_domain = htmlspecialchars( $cfg['player_domain'], ENT_QUOTES, 'UTF-8' );
 $val_api_domain = htmlspecialchars( $cfg['api_domain'], ENT_QUOTES, 'UTF-8' );
 $val_xfield_name = htmlspecialchars( $cfg['xfield_name'], ENT_QUOTES, 'UTF-8' );
+$val_xfield_imdb = htmlspecialchars( $cfg['xfield_imdb'], ENT_QUOTES, 'UTF-8' );
+$val_xfield_tmdb = htmlspecialchars( $cfg['xfield_tmdb'], ENT_QUOTES, 'UTF-8' );
+$val_xfield_tmdb_series = htmlspecialchars( $cfg['xfield_tmdb_series'], ENT_QUOTES, 'UTF-8' );
+$val_xfield_season = htmlspecialchars( $cfg['xfield_season'], ENT_QUOTES, 'UTF-8' );
+$val_xfield_episode = htmlspecialchars( $cfg['xfield_episode'], ENT_QUOTES, 'UTF-8' );
+$val_xfield_player = htmlspecialchars( $cfg['xfield_player'], ENT_QUOTES, 'UTF-8' );
+$val_xfield_source_code = htmlspecialchars( $cfg['xfield_source_code'], ENT_QUOTES, 'UTF-8' );
 $val_width = htmlspecialchars( $cfg['width'], ENT_QUOTES, 'UTF-8' );
 $val_height = htmlspecialchars( $cfg['height'], ENT_QUOTES, 'UTF-8' );
 $val_webhook_secret = htmlspecialchars( $cfg['webhook_secret'], ENT_QUOTES, 'UTF-8' );
+$val_site_id = htmlspecialchars( $cfg['site_id'] ?? '', ENT_QUOTES, 'UTF-8' );
 $val_cron_secret = htmlspecialchars( !empty($cfg['cron_secret']) ? $cfg['cron_secret'] : '', ENT_QUOTES, 'UTF-8' );
 
-$webhook_public_url = $config['http_home_url'] . 'engine/ajax/peestream_webhook.php?secret=' . $val_webhook_secret;
+$webhook_public_url = $config['http_home_url'] . 'engine/ajax/peestream_webhook.php';
 $cron_cli_cmd = 'php -f ' . ENGINE_DIR . '/modules/peestream_cron.php';
 $cron_http_url = $config['http_home_url'] . 'engine/modules/peestream_cron.php';
 
@@ -1568,6 +1598,25 @@ echo <<<HTML
 						<div class="col-sm-9">
 							<input type="text" name="xfield_name" value="{$val_xfield_name}" class="form-control" placeholder="peestream">
 							<span class="help-block text-muted">The name of the custom field (xfield) used to store the PeeStream video code (e.g. <code>peestream</code>).</span>
+						</div>
+					</div>
+					<div class="form-group">
+						<label class="control-label col-sm-3 text-semibold">AutoPublish identity fields:</label>
+						<div class="col-sm-9">
+							<input type="text" name="xfield_imdb" value="{$val_xfield_imdb}" class="form-control" placeholder="imdb">
+							<input type="text" name="xfield_tmdb" value="{$val_xfield_tmdb}" class="form-control" placeholder="tmdb" style="margin-top:5px;">
+							<input type="text" name="xfield_tmdb_series" value="{$val_xfield_tmdb_series}" class="form-control" placeholder="tmdb_series_id" style="margin-top:5px;">
+							<input type="text" name="xfield_season" value="{$val_xfield_season}" class="form-control" placeholder="season" style="margin-top:5px;">
+							<input type="text" name="xfield_episode" value="{$val_xfield_episode}" class="form-control" placeholder="episode" style="margin-top:5px;">
+							<span class="help-block text-muted">Field names are configurable; movie matches use IMDb then optional TMDb, episodes use series TMDb plus season and episode.</span>
+						</div>
+					</div>
+					<div class="form-group">
+						<label class="control-label col-sm-3 text-semibold">Player/source fields:</label>
+						<div class="col-sm-9">
+							<input type="text" name="xfield_player" value="{$val_xfield_player}" class="form-control" placeholder="Optional player embed xfield">
+							<input type="text" name="xfield_source_code" value="{$val_xfield_source_code}" class="form-control" placeholder="peestream_code" style="margin-top:5px;">
+							<span class="help-block text-muted">When a player xfield is configured, AutoPublish writes a responsive iframe there and keeps the source file code in the auxiliary field.</span>
 						</div>
 					</div>
 
@@ -1727,6 +1776,17 @@ echo <<<HTML
 					<input type="hidden" name="api_domain" value="{$val_api_domain}">
 					<input type="hidden" name="default_folder_id" value="{$cfg['default_folder_id']}">
 					<input type="hidden" name="xfield_name" value="{$val_xfield_name}">
+					<input type="hidden" name="xfield_imdb" value="{$val_xfield_imdb}">
+					<input type="hidden" name="xfield_tmdb" value="{$val_xfield_tmdb}">
+					<input type="hidden" name="xfield_tmdb_series" value="{$val_xfield_tmdb_series}">
+					<input type="hidden" name="xfield_season" value="{$val_xfield_season}">
+					<input type="hidden" name="xfield_episode" value="{$val_xfield_episode}">
+					<input type="hidden" name="xfield_player" value="{$val_xfield_player}">
+					<input type="hidden" name="xfield_source_code" value="{$val_xfield_source_code}">
+					<div class="form-group">
+						<label class="control-label col-sm-3 text-semibold">PeeStream Site ID:</label>
+						<div class="col-sm-9"><input type="text" name="site_id" value="{$val_site_id}" class="form-control" placeholder="site_..."></div>
+					</div>
 
 					<div class="form-group">
 						<label class="control-label col-sm-3 text-semibold">Webhook Secret Key (min 16 chars):</label>
@@ -1745,7 +1805,7 @@ echo <<<HTML
 						<label class="control-label col-sm-3 text-semibold">Your Webhook URL:</label>
 						<div class="col-sm-9">
 							<input type="text" readonly value="{$webhook_public_url}" class="form-control" style="background:#f8fafc;" onclick="this.select()">
-							<span class="help-block text-muted">Copy this URL into your PeeStream Account Webhook / Followed Series settings.</span>
+							<span class="help-block text-muted">Copy this URL into your PeeStream Account Webhook settings. Requests are authenticated with HMAC-SHA256.</span>
 						</div>
 					</div>
 

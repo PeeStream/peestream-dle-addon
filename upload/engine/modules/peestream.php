@@ -14,7 +14,7 @@ if( !defined( 'DATALIFEENGINE' ) ) {
 	die( "Hacking attempt!" );
 }
 
-// Učitavanje konfiguracije ako već nije učitana
+// Load configuration if not already loaded
 if( !isset( $peestream_config ) ) {
 	$conf_file = ENGINE_DIR . '/data/peestream.conf.php';
 	if( file_exists( $conf_file ) ) {
@@ -35,7 +35,7 @@ $cfg = array_merge( array(
 	'xfield_name' => 'peestream',
 ), isset( $peestream_config ) ? $peestream_config : array() );
 
-// Pomoćna funkcija za čišćenje i ekstrakciju koda videa
+// Helper function to sanitize and extract video code
 if( !function_exists( 'peestream_clean_code' ) ) {
 	function peestream_clean_code( $raw_input ) {
 		$raw_input = trim( strip_tags( (string)$raw_input ) );
@@ -48,7 +48,7 @@ if( !function_exists( 'peestream_clean_code' ) ) {
 			return $m[1];
 		}
 		
-		// Ako je samo kod
+		// If raw video code is provided
 		if( preg_match( '#^[a-zA-Z0-9_\-]+$#', $raw_input ) ) {
 			return $raw_input;
 		}
@@ -57,7 +57,7 @@ if( !function_exists( 'peestream_clean_code' ) ) {
 	}
 }
 
-// Pomoćna funkcija za generisanje HTML koda plejera
+// Helper function to generate player HTML markup
 if( !function_exists( 'peestream_render_player' ) ) {
 	function peestream_render_player( $video_code, $cfg ) {
 		$domain = rtrim( $cfg['player_domain'], '/' );
@@ -75,8 +75,8 @@ if( !function_exists( 'peestream_render_player' ) ) {
 		$allow_attr = 'allow="autoplay; fullscreen; picture-in-picture; encrypted-media"';
 		
 		if( !empty( $cfg['responsive'] ) && $cfg['responsive'] == '1' ) {
-			// Fluidni 16:9 responzivni omotač
-			$pb = '56.25%'; // Podrazumijevano 16:9
+			// Fluid 16:9 responsive container
+			$pb = '56.25%'; // Default 16:9 aspect ratio
 			if( !empty( $cfg['aspect_ratio'] ) ) {
 				$parts = explode( ':', $cfg['aspect_ratio'] );
 				if( count( $parts ) == 2 && intval( $parts[0] ) > 0 && intval( $parts[1] ) > 0 ) {
@@ -88,7 +88,7 @@ if( !function_exists( 'peestream_render_player' ) ) {
 				. '<iframe src="' . htmlspecialchars( $embed_url ) . '" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" frameborder="0"' . $allow_fs . ' ' . $allow_attr . '></iframe>'
 				. '</div>';
 		} else {
-			// Fiksne dimenzije
+			// Fixed dimensions
 			$w = !empty( $cfg['width'] ) ? htmlspecialchars( $cfg['width'] ) : '100%';
 			$h = !empty( $cfg['height'] ) ? htmlspecialchars( $cfg['height'] ) : '500px';
 			if( is_numeric( $w ) ) $w .= 'px';
@@ -103,16 +103,16 @@ if( !function_exists( 'peestream_render_player' ) ) {
 	}
 }
 
-// Pronalaženje koda videa u vijesti
+// Locate video code within article
 $video_code = '';
 $xf_name = !empty( $cfg['xfield_name'] ) ? $cfg['xfield_name'] : 'peestream';
 
-// 1. Provjera u nizu raspakovanih dodatnih polja ($xfieldsdata)
+// 1. Check unpacked extra fields array ($xfieldsdata)
 if( isset( $xfieldsdata ) && is_array( $xfieldsdata ) && !empty( $xfieldsdata[$xf_name] ) ) {
 	$video_code = peestream_clean_code( $xfieldsdata[$xf_name] );
 }
 
-// 2. Ako nije u $xfieldsdata, provjeri sirovo polje $row['xfields']
+// 2. If not found in $xfieldsdata, inspect raw field $row['xfields']
 if( empty( $video_code ) && isset( $row['xfields'] ) && !empty( $row['xfields'] ) ) {
 	if( function_exists( 'xfieldsdataload' ) ) {
 		$parsed_xf = xfieldsdataload( $row['xfields'] );
@@ -122,7 +122,7 @@ if( empty( $video_code ) && isset( $row['xfields'] ) && !empty( $row['xfields'] 
 	}
 }
 
-// 3. Fallback: Provjeri da li postoji BBCode oznaka [peestream]KOD[/peestream] unutar teksta vijesti
+// 3. Fallback: Check for BBCode tag [peestream]CODE[/peestream] in article story content
 if( empty( $video_code ) ) {
 	$story_text = '';
 	if( isset( $row['full_story'] ) ) $story_text .= ' ' . $row['full_story'];
@@ -133,30 +133,30 @@ if( empty( $video_code ) ) {
 	}
 }
 
-// Zamjena oznaka u DLE šablonu ($tpl objekat)
+// Replace template tags in DLE template ($tpl object)
 if( isset( $tpl ) && is_object( $tpl ) ) {
 	if( !empty( $video_code ) ) {
 		$player_html = peestream_render_player( $video_code, $cfg );
 		$embed_url = rtrim( $cfg['player_domain'], '/' ) . '/e/' . urlencode( $video_code );
 		
-		// Zamjena glavnih oznaka
+		// Replace primary template tags
 		$tpl->set( '{peestream_player}', $player_html );
 		$tpl->set( '{peestream_code}', $video_code );
 		$tpl->set( '{peestream_url}', $embed_url );
 		
-		// Omogući [peestream]...[/peestream] blok
+		// Enable [peestream]...[/peestream] block
 		$tpl->set_block( "'\\[peestream\\](.*?)\\[/peestream\\]'si", "\\1" );
-		// Sakrij [!peestream]...[/!peestream] blok
+		// Hide [!peestream]...[/!peestream] block
 		$tpl->set_block( "'\\[!peestream\\](.*?)\\[/!peestream\\]'si", "" );
 	} else {
-		// Nema videa - isprazni oznake
+		// No video attached - clear tags
 		$tpl->set( '{peestream_player}', '' );
 		$tpl->set( '{peestream_code}', '' );
 		$tpl->set( '{peestream_url}', '' );
 		
-		// Sakrij [peestream]...[/peestream] blok
+		// Hide [peestream]...[/peestream] block
 		$tpl->set_block( "'\\[peestream\\](.*?)\\[/peestream\\]'si", "" );
-		// Prikaži [!peestream]...[/!peestream] blok
+		// Show [!peestream]...[/!peestream] block
 		$tpl->set_block( "'\\[!peestream\\](.*?)\\[/!peestream\\]'si", "\\1" );
 	}
 }

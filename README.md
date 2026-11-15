@@ -1,10 +1,16 @@
+<p align="center">
+  <a href="https://peestream.com" target="_blank" rel="noopener noreferrer">
+    <img src="assets/branding/peestream-logo-horizontal.svg" alt="PeeStream for DataLife Engine" width="380" style="max-width: 100%;">
+  </a>
+</p>
+
 # PeeStream Video Player, Inserter & Safe Auto-Migrator for DataLife Engine (DLE)
 
 Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `https://peeplayer.com`). Seamlessly embed high-performance HLS video streams, upload remote videos directly from your article editor, synchronize TV episodes automatically via webhooks, and safely migrate links from failing third-party hosters.
 
 > [!WARNING]
-> **BETA RELEASE (v1.0.4-beta.1) — NOT PRODUCTION TESTED**
-> Compatibility across DLE 13.0–17.3+ is expected based on architecture review, DLE manifest specification, and extensive automated harness simulations (255 tests passed). Live CMS End-to-End runtime testing on an active DLE installation has **NOT BEEN RUN**. Installation is recommended exclusively on staging/testing sites. Always make a full database backup before running migrations. Please report any issues along with your CMS, PHP, and database versions.
+> **BETA RELEASE (v1.0.5-beta.1) - NOT PRODUCTION TESTED**
+> Compatibility across DLE 13.0 - 17.3+ is expected based on architecture review, DLE manifest specification, and extensive automated harness simulations (255 tests passed). Live CMS End-to-End runtime testing on an active DLE installation has **NOT BEEN RUN**. Installation is recommended exclusively on staging/testing sites. Always make a full database backup before running migrations. Please report any issues along with your CMS, PHP, and database versions.
 
 ---
 
@@ -47,20 +53,23 @@ Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `htt
      - **1-Click Rollback:** Instantly restore any or all migrated articles back to their original state.
      - **Multi-link Post Preservation:** Replaces strictly the target hoster URL; all surrounding text and additional links remain untouched.
 
-4. **Hardened Webhook Receiver (`engine/ajax/peestream_webhook.php`):**
-   - **POST-Only Enforcement:** Rejects non-POST methods.
-   - **Cryptographic Authentication:** Requires a secret token of at least 16 characters (`hash_equals`).
+4. **Hardened AutoPublish V2 Webhook Receiver (`engine/ajax/peestream_webhook.php`):**
+   - **POST-Only Enforcement and HMAC-SHA256:** Verifies `X-PeeStream-Signature: sha256=<hex>` against the exact raw request body with `hash_equals()`; URL/query-string secrets are not accepted.
+   - **Site Binding:** Requires the configured PeeStream `site_id` to match the signed `media.ready` payload.
+   - **V2 Event Handling:** `site.test` gets an immediate JSON 200 response; unknown event types are acknowledged with 200 and ignored.
+   - **Idempotency and Replay Window:** Reserves `event_id` uniquely and prunes event IDs after 72 hours; events older than 72 hours are acknowledged without processing.
    - **Rate Limiting:** Protects against flooding with a 60 requests/minute per-IP limit.
-   - **Replay Protection:** Deduplication index ensures the same video ready event is never applied twice.
-   - **Strict IMDb Matching:** Matches articles strictly by verified IMDb ID in extra fields (never by loose title matching).
+   - **Strict IMDb Matching and DLE xfields:** Matches articles by verified IMDb identifiers and preserves the existing configurable player xfield mapping.
    - **Moderation Queue:** Option to place newly auto-created articles in the moderation queue (`approve=0`).
+   - **Configurable DLE identity mapping:** Movies match exact configured IMDb first, then TMDb; episodes match series TMDb ID + season + episode (including season 0).
+   - **Player/source xfields:** Optional player xfield receives a responsive PeeStream iframe; a separate source-code xfield preserves the canonical PeeStream file code. The legacy `peestream` code field remains the default unless an embed xfield is configured.
 
 ---
 
 ## Installation Guide
 
 ### Method A: DLE Plugin Manager (Recommended)
-1. Download `dle_peestream_v1.0.4.zip` (or Release Candidate `dle_peestream_v1.0.4-RC.zip`) and extract the files.
+1. Download `dle_peestream_v1.0.5-beta.1.zip` from the official GitHub Releases page and extract the files.
 2. In your DLE Administration Panel, navigate to **Plugin Management** (`?mod=plugins`).
 3. Click **Upload Plugin** and select `peestream.xml`.
 4. Upload the `engine/` and `language/` directories to your server root (if not automatically extracted).
@@ -147,9 +156,11 @@ Official DataLife Engine addon for **PeeStream** (`https://peestream.com` / `htt
 2. Enter your **PeeStream API Key** (obtainable under *Settings > API* at `https://peestream.com`).
 3. Select your **Default Cloud Folder** where uploaded videos will be saved.
 4. Specify your DLE extra field name (default: `peestream`).
-5. Configure responsive fluid 16:9 sizing and autoplay preferences.
-6. Under the **Webhook Receiver** tab, click **Generate** to create a cryptographically secure secret key (auto-initialized upon installation).
-7. Copy the Webhook URL into your PeeStream account to enable real-time TV and movie synchronization.
+5. Configure identity xfields (defaults: `imdb`, `tmdb`, `tmdb_series_id`, `season`, `episode`) and optional player embed xfield. The source code is stored separately in `peestream_code`.
+6. Configure responsive fluid 16:9 sizing and autoplay preferences.
+7. In the **Webhook Receiver** tab, set the `site_id` issued when registering this site in PeeStream. The value must match the `site_id` sent in webhook payloads.
+8. Generate or retain the Webhook Secret Key (minimum 16 characters). Configure the same secret for this site in PeeStream; the sender signs the raw JSON body with HMAC-SHA256 and sends `X-PeeStream-Signature: sha256=<hex>`.
+9. Copy the displayed Webhook URL (no `?secret=` parameter) into your PeeStream site settings. `site.test` is used to verify the endpoint; only a validly signed `media.ready` with matching `site_id` is processed.
 
 ---
 

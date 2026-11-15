@@ -3,11 +3,11 @@
 	<name>PeeStream Player &amp; Tools</name>
 	<description>Official PeeStream high-performance video player, upload tools and safe competitor auto-migrator for DataLife Engine.</description>
 	<icon>engine/skins/images/peestream/icon.png</icon>
-	<version>1.0.4</version>
+	<version>1.0.5</version>
 	<dleversion>13.0</dleversion>
 	<versioncompare>greater</versioncompare>
 	<upgradeurl></upgradeurl>
-	<filelist>engine/inc/peestream.php,engine/modules/peestream.php,engine/modules/peestream_cron.php,engine/ajax/peestream_modal.php,engine/ajax/peestream_webhook.php,engine/skins/peestream.css,engine/skins/images/peestream.png,engine/skins/images/peestream/icon.png,engine/skins/images/peestream/peestream_editor.js,language/English/peestream.lng,language/Russian/peestream.lng,language/Turkish/peestream.lng</filelist>
+	<filelist>engine/inc/peestream.php,engine/inc/peestream_autopublish.php,engine/modules/peestream.php,engine/modules/peestream_cron.php,engine/ajax/peestream_modal.php,engine/ajax/peestream_webhook.php,engine/skins/peestream.css,engine/skins/images/peestream.png,engine/skins/images/peestream/icon.png,engine/skins/images/peestream/peestream_editor.js,language/English/peestream.lng,language/Russian/peestream.lng,language/Turkish/peestream.lng</filelist>
 	<mysqlinstall><![CDATA[CREATE TABLE IF NOT EXISTS {PREFIX}_peestream_webhooks (
 	id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
 	file_code VARCHAR(64) NOT NULL,
@@ -162,6 +162,13 @@ $defaults = array (
 	'autoplay' => '0',
 	'allow_fullscreen' => '1',
 	'xfield_name' => 'peestream',
+	'xfield_imdb' => 'imdb',
+	'xfield_tmdb' => 'tmdb',
+	'xfield_tmdb_series' => 'tmdb_series_id',
+	'xfield_season' => 'season',
+	'xfield_episode' => 'episode',
+	'xfield_player' => 'player_embed',
+	'xfield_source_code' => 'peestream_code',
 	'webhook_secret' => $init_secret,
 	'cron_secret' => $init_cron_secret,
 	'auto_create_news' => '0',
