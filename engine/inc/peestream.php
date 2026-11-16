@@ -1467,8 +1467,11 @@ if( !empty( $cfg['api_key'] ) ) {
 		$usr_pend  = htmlspecialchars( isset( $u_data['pending'] ) ? number_format( (float)$u_data['pending'], 2 ) : '0.00', ENT_QUOTES, 'UTF-8' );
 		
 		$api_status_html = '<div class="alert alert-success alert-styled-left alert-arrow-left alert-bordered" style="margin-bottom:20px;">'
-			. '<h6 class="alert-heading text-semibold">Connected to PeeStream Account: <b>' . $usr_name . '</b></h6>'
+			. '<h6 class="alert-heading text-semibold">Connected to PeeStream Account: <b>' . $usr_name . '</b> <span class="label label-info" style="margin-left:8px;font-size:11px;vertical-align:middle;background:#10b981;border-color:#10b981;">Early Adopter Promo (Full Access)</span></h6>'
 			. '<span>Available Balance: <b>$' . $usr_bal . ' USD</b> | Pending Balance: <b>$' . $usr_pend . ' USD</b> | Total Cloud Videos: <b>' . $usr_files . '</b></span>'
+			. '<div style="margin-top:8px;font-size:12px;color:#047857;background:#ecfdf5;padding:6px 10px;border-radius:4px;border:1px solid #a7f3d0;">'
+			. '<strong>Early Adopter Promo:</strong> All enterprise automation features (AutoPublish V2 webhook sync and competitor link migration) are currently unlocked for free during beta. Player embedding remains permanently free.'
+			. '</div>'
 			. '</div>';
 			
 		// 2. Official endpoint: /api/folder/list
@@ -1493,7 +1496,7 @@ if( !empty( $cfg['api_key'] ) ) {
 	}
 } else {
 	$api_status_html = '<div class="alert alert-info alert-styled-left alert-arrow-left alert-bordered" style="margin-bottom:20px;">'
-		. '<b>Setup Required:</b> Enter your <b>PeeStream API key</b> below to unlock video imports, folder selection and auto-migration.'
+		. '<b>Setup Required:</b> Enter your <b>PeeStream API key</b> below to unlock video imports, folder selection and auto-migration (100% free under Early Adopter Promo).'
 		. '</div>';
 }
 
