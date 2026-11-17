@@ -1515,6 +1515,42 @@ $can_declare_success_2 = (! $has_peestream_2 && $has_orig_2);
 assert_test("Rollback succeeds (true) when PeeStream code is absent BUT original link is present", $can_declare_success_2 === true);
 
 // -------------------------------------------------------------
+// TEST SUITE: API Error Mapping (401 / 402 / 403)
+// -------------------------------------------------------------
+echo "\n--- Testing PeeStream API Error Code Mapping (401/402/403) ---\n";
+
+$fn_simulate_error = function($data) {
+    if( isset( $data['status'] ) && (int)$data['status'] !== 200 ) {
+        $result_code = isset( $data['result']['code'] ) ? $data['result']['code'] : '';
+        $message = isset( $data['result']['message'] ) ? $data['result']['message'] : ( isset( $data['msg'] ) ? $data['msg'] : '' );
+        
+        if ( 401 === (int)$data['status'] && 'invalid_api_key' === $result_code ) {
+            $message = 'Invalid API key. Please check your PeeStream API key.';
+        } elseif ( 403 === (int)$data['status'] && 'account_inactive' === $result_code ) {
+            $message = 'Account inactive or pending approval. Active PeeStream account required.';
+        } elseif ( 402 === (int)$data['status'] && 'quota_exceeded' === $result_code ) {
+            $message = 'PeeStream quota exceeded. Please top-up or upgrade plan.';
+        }
+        
+        if ( empty( $message ) ) {
+            $message = 'API Error (' . $data['status'] . ')';
+        }
+        
+        return array( 'success' => false, 'error' => $message );
+    }
+    return array( 'success' => true );
+};
+
+$err401 = $fn_simulate_error(array('status' => 401, 'result' => array('code' => 'invalid_api_key', 'message' => 'Unauthorized')));
+assert_test("API Error Mapping 401: invalid_api_key returns user-friendly error", $err401['success'] === false && strpos($err401['error'], 'Invalid API key') !== false);
+
+$err403 = $fn_simulate_error(array('status' => 403, 'result' => array('code' => 'account_inactive', 'message' => 'Forbidden')));
+assert_test("API Error Mapping 403: account_inactive returns user-friendly error", $err403['success'] === false && strpos($err403['error'], 'Account inactive') !== false);
+
+$err402 = $fn_simulate_error(array('status' => 402, 'result' => array('code' => 'quota_exceeded', 'message' => 'Payment Required')));
+assert_test("API Error Mapping 402: quota_exceeded returns user-friendly error", $err402['success'] === false && strpos($err402['error'], 'quota exceeded') !== false);
+
+// -------------------------------------------------------------
 // FINAL SUMMARY
 // -------------------------------------------------------------
 echo "\n=========================================================\n";

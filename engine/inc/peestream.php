@@ -402,7 +402,22 @@ function peestream_api_call( $endpoint, $api_key, $api_domain, $params = array()
 	}
 	
 	if( isset( $data['status'] ) && (int)$data['status'] !== 200 ) {
-		return array( 'success' => false, 'error' => isset( $data['msg'] ) ? $data['msg'] : ( 'API Error (' . $data['status'] . ')' ) );
+		$result_code = isset( $data['result']['code'] ) ? $data['result']['code'] : '';
+		$message = isset( $data['result']['message'] ) ? $data['result']['message'] : ( isset( $data['msg'] ) ? $data['msg'] : '' );
+		
+		if ( 401 === (int)$data['status'] && 'invalid_api_key' === $result_code ) {
+			$message = 'Invalid API key. Please check your PeeStream API key.';
+		} elseif ( 403 === (int)$data['status'] && 'account_inactive' === $result_code ) {
+			$message = 'Account inactive or pending approval. Active PeeStream account required.';
+		} elseif ( 402 === (int)$data['status'] && 'quota_exceeded' === $result_code ) {
+			$message = 'PeeStream quota exceeded. Please top-up or upgrade plan.';
+		}
+		
+		if ( empty( $message ) ) {
+			$message = 'API Error (' . $data['status'] . ')';
+		}
+		
+		return array( 'success' => false, 'error' => $message );
 	}
 	
 	return array( 'success' => true, 'data' => isset( $data['result'] ) ? $data['result'] : $data );
